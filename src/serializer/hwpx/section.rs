@@ -211,15 +211,26 @@ pub(crate) fn render_paragraph_runs(para: &Paragraph, ctx: &mut SerializeContext
 }
 
 fn can_render_hwpx_run_spans(para: &Paragraph) -> bool {
-    if !para.field_ranges.is_empty() || para.hwpx_run_spans.is_empty() {
+    if para.hwpx_run_spans.is_empty() {
         return false;
     }
-    if !para.controls.is_empty() && hwpx_inline_slots_with_positions(para).is_none() {
+    let slots = match hwpx_slots_with_positions(para) {
+        Some(slots) => slots,
+        None => return false,
+    };
+    if slots
+        .iter()
+        .any(|slot| matches!(slot.kind, HwpxRunSlotKind::Control(control) if !is_hwpx_inline_slot(control)))
+    {
         return false;
     }
 
     let text_end = paragraph_text_utf16_len(para);
-    let logical_end = text_end.saturating_add(para.controls.len() as u32 * 8);
+    let logical_end = para
+        .char_count
+        .checked_sub(1)
+        .filter(|value| *value >= text_end)
+        .unwrap_or_else(|| text_end.saturating_add(slots.len() as u32 * 8));
     let mut cursor = 0u32;
     for span in &para.hwpx_run_spans {
         if span.start_pos > span.end_pos || span.start_pos != cursor || span.end_pos > logical_end {
@@ -238,7 +249,7 @@ fn paragraph_text_utf16_len(para: &Paragraph) -> u32 {
 fn render_hwpx_run_spans(para: &Paragraph, ctx: &mut SerializeContext) -> String {
     let mut out = String::new();
     let mut tab_idx = 0usize;
-    let inline_slots = hwpx_inline_slots_with_positions(para);
+    let slots = hwpx_slots_with_positions(para);
     let mut slot_idx = 0usize;
 
     for span in &para.hwpx_run_spans {
@@ -248,7 +259,7 @@ fn render_hwpx_run_spans(para: &Paragraph, ctx: &mut SerializeContext) -> String
             para,
             span.start_pos,
             span.end_pos,
-            inline_slots.as_deref(),
+            slots.as_deref(),
             &mut slot_idx,
             &mut tab_idx,
             ctx,
@@ -259,19 +270,27 @@ fn render_hwpx_run_spans(para: &Paragraph, ctx: &mut SerializeContext) -> String
     out
 }
 
-fn hwpx_inline_slots_with_positions(para: &Paragraph) -> Option<Vec<(&Control, u32)>> {
+enum HwpxRunSlotKind<'a> {
+    Control(&'a Control),
+    FieldEnd(u32),
+}
+
+struct HwpxRunSlot<'a> {
+    pos: u32,
+    kind: HwpxRunSlotKind<'a>,
+}
+
+fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
     let slot_count = inferred_control_slot_count(para);
-    let slots: Vec<&Control> = if slot_count == para.controls.len() {
-        para.controls.iter().collect()
-    } else {
-        return None;
-    };
-    if slots.iter().any(|control| !is_hwpx_inline_slot(control)) {
+    if slot_count != para.controls.len() {
         return None;
     }
 
-    let mut positions = Vec::with_capacity(slots.len());
-    let mut slot_idx = 0usize;
+    let field_ends = field_end_slots_with_positions(para)?;
+    let mut field_end_idx = 0usize;
+    let mut control_idx = 0usize;
+    let total_slot_count = para.controls.len() + field_ends.len();
+    let mut slots = Vec::with_capacity(total_slot_count);
     let mut expected_utf16_pos = 0u32;
     for (idx, c) in para.text.chars().enumerate() {
         let char_pos = para
@@ -279,9 +298,15 @@ fn hwpx_inline_slots_with_positions(para: &Paragraph) -> Option<Vec<(&Control, u
             .get(idx)
             .copied()
             .unwrap_or(expected_utf16_pos);
-        while slot_idx < slots.len() && char_pos >= expected_utf16_pos.saturating_add(8) {
-            positions.push((slots[slot_idx], expected_utf16_pos));
-            slot_idx += 1;
+        while slots.len() < total_slot_count && char_pos >= expected_utf16_pos.saturating_add(8) {
+            push_hwpx_slot_at_position(
+                para,
+                &field_ends,
+                &mut field_end_idx,
+                &mut control_idx,
+                &mut slots,
+                expected_utf16_pos,
+            )?;
             expected_utf16_pos = expected_utf16_pos.saturating_add(8);
         }
         let width = char_utf16_width(c);
@@ -291,12 +316,84 @@ fn hwpx_inline_slots_with_positions(para: &Paragraph) -> Option<Vec<(&Control, u
             expected_utf16_pos = expected_utf16_pos.saturating_add(width);
         }
     }
-    while slot_idx < slots.len() {
-        positions.push((slots[slot_idx], expected_utf16_pos));
-        slot_idx += 1;
+    let logical_end = para
+        .char_count
+        .checked_sub(1)
+        .filter(|value| *value >= expected_utf16_pos)
+        .unwrap_or_else(|| {
+            expected_utf16_pos.saturating_add(
+                (para.controls.len() + field_ends.len()).saturating_sub(slots.len()) as u32 * 8,
+            )
+        });
+    while slots.len() < total_slot_count && expected_utf16_pos.saturating_add(8) <= logical_end {
+        push_hwpx_slot_at_position(
+            para,
+            &field_ends,
+            &mut field_end_idx,
+            &mut control_idx,
+            &mut slots,
+            expected_utf16_pos,
+        )?;
         expected_utf16_pos = expected_utf16_pos.saturating_add(8);
     }
 
+    if control_idx == para.controls.len() && field_end_idx == field_ends.len() {
+        Some(slots)
+    } else {
+        None
+    }
+}
+
+fn push_hwpx_slot_at_position<'a>(
+    para: &'a Paragraph,
+    field_ends: &[(u32, u32)],
+    field_end_idx: &mut usize,
+    control_idx: &mut usize,
+    slots: &mut Vec<HwpxRunSlot<'a>>,
+    pos: u32,
+) -> Option<()> {
+    if field_ends
+        .get(*field_end_idx)
+        .is_some_and(|(field_end_pos, _)| *field_end_pos == pos)
+    {
+        let (_, field_id) = field_ends[*field_end_idx];
+        slots.push(HwpxRunSlot {
+            pos,
+            kind: HwpxRunSlotKind::FieldEnd(field_id),
+        });
+        *field_end_idx += 1;
+        return Some(());
+    }
+
+    let control = para.controls.get(*control_idx)?;
+    slots.push(HwpxRunSlot {
+        pos,
+        kind: HwpxRunSlotKind::Control(control),
+    });
+    *control_idx += 1;
+    Some(())
+}
+
+fn field_end_slots_with_positions(para: &Paragraph) -> Option<Vec<(u32, u32)>> {
+    let mut positions = Vec::with_capacity(para.field_ranges.len());
+    let text_len = para.text.chars().count();
+    let logical_end = para.char_count.checked_sub(1)?;
+    for range in &para.field_ranges {
+        let field_id = match para.controls.get(range.control_idx) {
+            Some(Control::Field(field)) => field.field_id,
+            _ => return None,
+        };
+        let pos = if range.end_char_idx < text_len {
+            para.char_offsets
+                .get(range.end_char_idx)
+                .copied()?
+                .checked_sub(8)?
+        } else {
+            logical_end.checked_sub(8)?
+        };
+        positions.push((pos, field_id));
+    }
+    positions.sort_by_key(|(pos, _)| *pos);
     Some(positions)
 }
 
@@ -304,7 +401,7 @@ fn render_hwpx_run_span_content(
     para: &Paragraph,
     start_pos: u32,
     end_pos: u32,
-    inline_slots: Option<&[(&Control, u32)]>,
+    slots: Option<&[HwpxRunSlot<'_>]>,
     slot_idx: &mut usize,
     tab_idx: &mut usize,
     ctx: &mut SerializeContext,
@@ -318,9 +415,10 @@ fn render_hwpx_run_span_content(
             .get(index)
             .copied()
             .unwrap_or(fallback_pos);
-        if let Some(slots) = inline_slots {
+        if let Some(slots) = slots {
             while *slot_idx < slots.len() {
-                let (control, slot_pos) = slots[*slot_idx];
+                let slot = &slots[*slot_idx];
+                let slot_pos = slot.pos;
                 if slot_pos < start_pos {
                     *slot_idx += 1;
                     continue;
@@ -330,7 +428,7 @@ fn render_hwpx_run_span_content(
                 }
                 if slot_pos >= start_pos {
                     flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
-                    render_control_slot(&mut out, control, ctx);
+                    render_hwpx_run_slot(&mut out, &slot.kind, ctx);
                 }
                 *slot_idx += 1;
             }
@@ -341,12 +439,13 @@ fn render_hwpx_run_span_content(
             text_buf.push(c);
         }
     }
-    if let Some(slots) = inline_slots {
-        while *slot_idx < slots.len() && slots[*slot_idx].1 < end_pos {
-            let (control, slot_pos) = slots[*slot_idx];
+    if let Some(slots) = slots {
+        while *slot_idx < slots.len() && slots[*slot_idx].pos < end_pos {
+            let slot = &slots[*slot_idx];
+            let slot_pos = slot.pos;
             if slot_pos >= start_pos {
                 flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
-                render_control_slot(&mut out, control, ctx);
+                render_hwpx_run_slot(&mut out, &slot.kind, ctx);
             }
             *slot_idx += 1;
         }
@@ -354,6 +453,19 @@ fn render_hwpx_run_span_content(
     flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
 
     out
+}
+
+fn render_hwpx_run_slot(out: &mut String, slot: &HwpxRunSlotKind<'_>, ctx: &mut SerializeContext) {
+    match slot {
+        HwpxRunSlotKind::Control(control) => render_control_slot(out, control, ctx),
+        HwpxRunSlotKind::FieldEnd(field_id) => {
+            if let Ok(xml) = writer_to_string(|w| write_field_end(w, *field_id)) {
+                out.push_str("<hp:ctrl>");
+                out.push_str(&xml);
+                out.push_str("</hp:ctrl>");
+            }
+        }
+    }
 }
 
 fn can_render_char_shape_runs(para: &Paragraph) -> bool {
@@ -1723,6 +1835,61 @@ mod tests {
         assert!(
             first < column_run && column_run < last,
             "run order should remain text, column control, text: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_field_begin_end_span_boundaries() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A</hp:t><hp:ctrl><hp:fieldBegin id="42" type="CLICKHERE" name="" editable="1"/></hp:ctrl></hp:run>
+  <hp:run charPrIDRef="8"><hp:t>B</hp:t></hp:run>
+  <hp:run charPrIDRef="7"><hp:ctrl><hp:fieldEnd beginIDRef="42"/></hp:ctrl><hp:t>C</hp:t></hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "ABC");
+        assert_eq!(para.field_ranges.len(), 1, "field range should be retained");
+        assert_eq!(
+            para.hwpx_run_spans.len(),
+            3,
+            "field begin/end run spans should be retained"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        assert_eq!(
+            xml.matches(r#"<hp:run charPrIDRef="7">"#).count(),
+            2,
+            "field boundary runs should survive: {}",
+            xml
+        );
+        assert_eq!(
+            xml.matches(r#"<hp:run charPrIDRef="8">"#).count(),
+            1,
+            "middle field text run should survive: {}",
+            xml
+        );
+        let begin_run = xml
+            .find(r#"<hp:run charPrIDRef="7"><hp:t>A</hp:t><hp:ctrl><hp:fieldBegin "#)
+            .expect("fieldBegin should stay after A in the first run");
+        let middle_run = xml
+            .find(r#"<hp:run charPrIDRef="8"><hp:t>B</hp:t></hp:run>"#)
+            .expect("middle text run should survive");
+        let end_run = xml[middle_run..]
+            .find(r#"<hp:run charPrIDRef="7"><hp:ctrl><hp:fieldEnd "#)
+            .map(|idx| middle_run + idx)
+            .expect("fieldEnd should stay in the final run");
+        assert!(
+            begin_run < middle_run && middle_run < end_run,
+            "run order should remain field begin, text, field end: {}",
             xml
         );
     }
