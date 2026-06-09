@@ -75,6 +75,13 @@ pub struct PageBorderFill {
     ///
     /// 렌더러의 외곽선 배치 계약인 `basis`와 분리한다.
     pub ui_basis: PageBorderUiBasis,
+    /// HWPX `<hp:pageBorderFill type="...">` apply target.
+    ///
+    /// HWP/HWP3 binary paths do not expose this value directly. `Unknown`
+    /// allows serializers to keep their legacy positional fallback for those
+    /// sources while preserving explicit HWPX BOTH/EVEN/ODD metadata when it is
+    /// parsed from XML.
+    pub apply_type: PageBorderFillApply,
 }
 
 /// 쪽 테두리 렌더 위치 기준
@@ -95,6 +102,20 @@ pub enum PageBorderUiBasis {
     Paper,
     /// 한컴 UI의 쪽 기준
     Page,
+}
+
+/// HWPX page border/fill apply target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PageBorderFillApply {
+    /// Source format did not provide an explicit HWPX apply target.
+    #[default]
+    Unknown,
+    /// Apply to both odd and even pages.
+    Both,
+    /// Apply to even pages.
+    Even,
+    /// Apply to odd pages.
+    Odd,
 }
 
 /// 단 정의 ('cold' 컨트롤)

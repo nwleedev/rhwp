@@ -27,7 +27,7 @@ use crate::model::control::{
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
-use crate::model::page::PageBorderFill;
+use crate::model::page::{PageBorderFill, PageBorderFillApply};
 use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, TextWrap, VertAlign, VertRelTo,
@@ -1172,15 +1172,16 @@ fn replace_page_border_fills(
 
     let mut rendered = String::new();
     rendered.push_str(&render_page_border_fill(
-        "BOTH",
+        page_border_fill_apply_type(&section_def.page_border_fill, "BOTH"),
         &section_def.page_border_fill,
     ));
     for (idx, page_border_fill) in section_def.extra_page_border_fills.iter().enumerate() {
-        let apply_type = match idx {
+        let fallback_apply_type = match idx {
             0 => "EVEN",
             1 => "ODD",
             _ => "BOTH",
         };
+        let apply_type = page_border_fill_apply_type(page_border_fill, fallback_apply_type);
         rendered.push_str(&render_page_border_fill(apply_type, page_border_fill));
     }
     xml.replacen(TEMPLATE_PAGE_BORDER_FILLS, &rendered, 1)
@@ -1211,6 +1212,18 @@ fn render_page_border_fill(apply_type: &str, page_border_fill: &PageBorderFill) 
         page_border_fill.spacing_top,
         page_border_fill.spacing_bottom,
     )
+}
+
+fn page_border_fill_apply_type<'a>(
+    page_border_fill: &PageBorderFill,
+    fallback: &'a str,
+) -> &'a str {
+    match page_border_fill.apply_type {
+        PageBorderFillApply::Both => "BOTH",
+        PageBorderFillApply::Even => "EVEN",
+        PageBorderFillApply::Odd => "ODD",
+        PageBorderFillApply::Unknown => fallback,
+    }
 }
 
 fn page_border_fill_text_border(page_border_fill: &PageBorderFill) -> &'static str {
@@ -1429,7 +1442,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "PageBorderFill currently does not retain HWPX type/apply metadata in IR"]
     fn page_pr_roundtrip_preserves_page_border_fill_type_order() {
         let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
 <hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">

@@ -16,7 +16,7 @@ use crate::model::header_footer::{Footer, Header, HeaderFooterApply, MasterPage}
 use crate::model::image::{CropInfo, ImageAttr, ImageEffect};
 use crate::model::page::{
     BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
-    PageBorderUiBasis, PageDef,
+    PageBorderFillApply, PageBorderUiBasis, PageDef,
 };
 use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
 use crate::model::shape::{
@@ -1119,6 +1119,7 @@ fn parse_page_border_fill_empty(e: &quick_xml::events::BytesStart) -> PageBorder
         header_inside,
         footer_inside,
     );
+    page_border_fill.apply_type = page_border_fill_apply_type(&apply_type);
     page_border_fill.ui_basis = if text_border.eq_ignore_ascii_case("PAPER") {
         // Task #1129 Stage 28: textBorder=PAPER is shown as page basis in the
         // dialog and renders from the page/body area edge.
@@ -1129,6 +1130,18 @@ fn parse_page_border_fill_empty(e: &quick_xml::events::BytesStart) -> PageBorder
         PageBorderUiBasis::Paper
     };
     page_border_fill
+}
+
+fn page_border_fill_apply_type(value: &str) -> PageBorderFillApply {
+    if value.eq_ignore_ascii_case("BOTH") {
+        PageBorderFillApply::Both
+    } else if value.eq_ignore_ascii_case("EVEN") {
+        PageBorderFillApply::Even
+    } else if value.eq_ignore_ascii_case("ODD") {
+        PageBorderFillApply::Odd
+    } else {
+        PageBorderFillApply::Unknown
+    }
 }
 
 fn parse_page_border_fill_offset(
