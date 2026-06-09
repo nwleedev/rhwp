@@ -27,7 +27,9 @@ use crate::model::control::{
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
-use crate::model::page::{PageBorderFill, PageBorderFillApply};
+use crate::model::page::{
+    ColumnDef, ColumnDirection, ColumnType, PageBorderFill, PageBorderFillApply,
+};
 use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, TextWrap, VertAlign, VertRelTo,
@@ -493,7 +495,7 @@ fn render_run_content(para: &Paragraph, ctx: &mut SerializeContext) -> String {
     } else {
         para.controls
             .iter()
-            .filter(|c| is_hwpx_inline_slot(c))
+            .filter(|c| is_hwpx_fallback_inline_slot(c))
             .collect()
     };
 
@@ -675,10 +677,15 @@ fn is_hwpx_inline_slot(control: &Control) -> bool {
             | Control::PageHide(_)
             | Control::PageNumberPos(_)
             | Control::NewNumber(_)
+            | Control::ColumnDef(_)
             | Control::Header(_)
             | Control::Footer(_)
             | Control::AutoNumber(_)
     )
+}
+
+fn is_hwpx_fallback_inline_slot(control: &Control) -> bool {
+    is_hwpx_inline_slot(control) && !matches!(control, Control::ColumnDef(_))
 }
 
 fn flush_text_fragment(
@@ -729,10 +736,81 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         Control::PageHide(ph) => out.push_str(&render_page_hiding(ph)),
         Control::PageNumberPos(pn) => out.push_str(&render_page_num(pn)),
         Control::NewNumber(nn) => out.push_str(&render_new_num(nn)),
+        Control::ColumnDef(cd) => out.push_str(&render_column_def(cd)),
         Control::Header(h) => out.push_str(&render_header(h, ctx)),
         Control::Footer(f) => out.push_str(&render_footer(f, ctx)),
         Control::AutoNumber(an) => out.push_str(&render_autonum(an)),
         _ => {}
+    }
+}
+
+fn render_column_def(cd: &ColumnDef) -> String {
+    let column_type = match cd.column_type {
+        ColumnType::Normal => "NEWSPAPER",
+        ColumnType::Distribute => "BalancedNewspaper",
+        ColumnType::Parallel => "Parallel",
+    };
+    let layout = match cd.direction {
+        ColumnDirection::LeftToRight => "LEFT",
+        ColumnDirection::RightToLeft => "RIGHT",
+    };
+    let same_sz = u8::from(cd.same_width);
+    let line = if cd.separator_type == 0 && cd.separator_width == 0 && cd.separator_color == 0 {
+        String::new()
+    } else {
+        format!(
+            r#"<hp:colLine type="{}" width="{}" color="{}"/>"#,
+            column_line_type_to_hwpx(cd.separator_type),
+            column_line_width_to_hwpx(cd.separator_width),
+            color_ref_to_hwpx(cd.separator_color),
+        )
+    };
+
+    if line.is_empty() {
+        format!(
+            r#"<hp:ctrl><hp:colPr id="" type="{column_type}" layout="{layout}" colCount="{}" sameSz="{same_sz}" sameGap="{}"/></hp:ctrl>"#,
+            cd.column_count, cd.spacing,
+        )
+    } else {
+        format!(
+            r#"<hp:ctrl><hp:colPr id="" type="{column_type}" layout="{layout}" colCount="{}" sameSz="{same_sz}" sameGap="{}">{line}</hp:colPr></hp:ctrl>"#,
+            cd.column_count, cd.spacing,
+        )
+    }
+}
+
+fn column_line_type_to_hwpx(value: u8) -> &'static str {
+    match value {
+        0 => "NONE",
+        1 => "SOLID",
+        2 => "DASH",
+        3 => "DOT",
+        4 => "DASH_DOT",
+        5 => "DASH_DOT_DOT",
+        6 => "LONG_DASH",
+        7 => "CIRCLE",
+        _ => "SOLID",
+    }
+}
+
+fn column_line_width_to_hwpx(value: u8) -> &'static str {
+    match value {
+        0 => "0.1 mm",
+        1 => "0.12 mm",
+        2 => "0.15 mm",
+        3 => "0.2 mm",
+        4 => "0.25 mm",
+        5 => "0.3 mm",
+        6 => "0.4 mm",
+        7 => "0.5 mm",
+        8 => "0.6 mm",
+        9 => "0.7 mm",
+        10 => "1.0 mm",
+        11 => "1.5 mm",
+        12 => "2.0 mm",
+        13 => "3.0 mm",
+        14 => "4.0 mm",
+        _ => "5.0 mm",
     }
 }
 
@@ -1590,6 +1668,61 @@ mod tests {
         assert!(
             first < table_run && table_run < last,
             "run order should remain text, table, text: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_column_def_control_span_boundaries() {
+        let source = r##"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>
+  <hp:run charPrIDRef="8"><hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="2" sameSz="1" sameGap="850"><hp:colLine type="SOLID" width="0.12 mm" color="#000000"/></hp:colPr></hp:ctrl></hp:run>
+  <hp:run charPrIDRef="9"><hp:t>B</hp:t></hp:run>
+</hp:p>
+</hs:sec>"##;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert_eq!(
+            para.hwpx_run_spans.len(),
+            3,
+            "column control run span should be retained"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let first = xml
+            .find(r#"<hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>"#)
+            .expect("first text run should survive");
+        let column_run = xml
+            .find(r#"<hp:run charPrIDRef="8">"#)
+            .expect("column control run should survive");
+        let column = xml[column_run..]
+            .find(r#"<hp:ctrl><hp:colPr "#)
+            .map(|idx| column_run + idx)
+            .expect("colPr control should remain in the charPrIDRef=8 run");
+        let column_run_end = xml[column_run..]
+            .find("</hp:run>")
+            .map(|idx| column_run + idx)
+            .expect("column control run should be closed");
+        assert!(
+            column < column_run_end,
+            "colPr should be serialized before the charPrIDRef=8 run closes: {}",
+            xml
+        );
+        assert!(xml.contains(r##"<hp:colLine type="SOLID" width="0.12 mm" color="#000000"/>"##));
+        let last = xml
+            .find(r#"<hp:run charPrIDRef="9"><hp:t>B</hp:t></hp:run>"#)
+            .expect("last text run should survive");
+        assert!(
+            first < column_run && column_run < last,
+            "run order should remain text, column control, text: {}",
             xml
         );
     }
