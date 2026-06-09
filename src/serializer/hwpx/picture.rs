@@ -25,7 +25,10 @@
 
 use std::io::Write;
 
-use quick_xml::Writer;
+use quick_xml::{
+    events::{BytesText, Event},
+    Writer,
+};
 
 use crate::model::image::{ImageEffect, Picture};
 use crate::model::shape::{
@@ -90,6 +93,7 @@ pub fn write_picture<W: Write>(
     write_sz(w, &pic.common)?;
     write_pos(w, &pic.common)?;
     write_out_margin(w, &pic.common)?;
+    write_shape_comment(w, &pic.common)?;
 
     end_tag(w, "hp:pic")?;
     Ok(())
@@ -245,6 +249,20 @@ fn write_img<W: Write>(
             ("alpha", "0"),
         ],
     )
+}
+
+fn write_shape_comment<W: Write>(
+    w: &mut Writer<W>,
+    c: &CommonObjAttr,
+) -> Result<(), SerializeError> {
+    if c.description.is_empty() {
+        return Ok(());
+    }
+
+    start_tag(w, "hp:shapeComment")?;
+    w.write_event(Event::Text(BytesText::new(&c.description)))
+        .map_err(|e| SerializeError::XmlError(format!("shapeComment: {e}")))?;
+    end_tag(w, "hp:shapeComment")
 }
 
 fn write_effects<W: Write>(w: &mut Writer<W>) -> Result<(), SerializeError> {
@@ -485,6 +503,28 @@ mod tests {
             ),
             "rotationInfo must use ShapeComponentAttr values: {}",
             xml
+        );
+    }
+
+    #[test]
+    fn shape_comment_is_serialized_from_common_description() {
+        let doc = make_doc_with_bin(1, "png");
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let mut pic = make_picture(1);
+        pic.common.description = "alpha < beta".to_string();
+
+        let xml = serialize(&pic, &ctx);
+
+        assert!(
+            xml.contains("<hp:shapeComment>alpha &lt; beta</hp:shapeComment>"),
+            "shapeComment must preserve object description text: {}",
+            xml
+        );
+        let out_margin = xml.find("<hp:outMargin").expect("outMargin");
+        let comment = xml.find("<hp:shapeComment>").expect("shapeComment");
+        assert!(
+            out_margin < comment,
+            "shapeComment should follow outMargin in the current observed order"
         );
     }
 

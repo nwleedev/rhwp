@@ -22,7 +22,8 @@
 use quick_xml::Writer;
 
 use crate::model::control::{
-    AutoNumber, AutoNumberType, Bookmark, Control, Equation, NewNumber, PageHide, PageNumberPos,
+    AutoNumber, AutoNumberType, Bookmark, CharOverlap, Control, Equation, NewNumber, PageHide,
+    PageNumberPos,
 };
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
@@ -1087,6 +1088,7 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
                 Err(e) => eprintln!("[hwpx] Field 직렬화 실패: {e}"),
             }
         }
+        Control::CharOverlap(co) => out.push_str(&render_char_overlap(co, ctx)),
         Control::Bookmark(bm) => out.push_str(&render_bookmark(bm)),
         Control::PageHide(ph) => out.push_str(&render_page_hiding(ph)),
         Control::PageNumberPos(pn) => out.push_str(&render_page_num(pn)),
@@ -1096,6 +1098,50 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         Control::Footer(f) => out.push_str(&render_footer(f, ctx)),
         Control::AutoNumber(an) => out.push_str(&render_autonum(an)),
         _ => {}
+    }
+}
+
+fn render_char_overlap(co: &CharOverlap, ctx: &mut SerializeContext) -> String {
+    let circle_type = match co.border_type {
+        1 => "SHAPE_CIRCLE",
+        2 => "SHAPE_REVERSAL_CIRCLE",
+        3 => "SHAPE_RECTANGLE",
+        4 => "SHAPE_REVERSAL_RECTANGLE",
+        5 => "SHAPE_TRIANGLE",
+        6 => "SHAPE_REVERSAL_TIRANGLE",
+        _ => "CHAR",
+    };
+    let compose_type = if co.expansion == 1 {
+        "OVERLAP"
+    } else {
+        "SPREAD"
+    };
+    let text = co.chars.iter().collect::<String>();
+    let mut out = format!(
+        r#"<hp:compose circleType="{}" charSz="{}" composeType="{}">"#,
+        circle_type, co.inner_char_size, compose_type
+    );
+    out.push_str("<hp:composeText>");
+    out.push_str(&xml_escape(&text));
+    out.push_str("</hp:composeText>");
+    for char_shape_id in &co.char_shape_ids {
+        if *char_shape_id != u32::MAX {
+            reference_char_shape_if_applicable(ctx, *char_shape_id);
+        }
+        out.push_str(&format!(
+            r#"<hp:charPr prIDRef="{}"/>"#,
+            render_char_overlap_char_pr_id(*char_shape_id)
+        ));
+    }
+    out.push_str("</hp:compose>");
+    out
+}
+
+fn render_char_overlap_char_pr_id(char_shape_id: u32) -> String {
+    if char_shape_id == u32::MAX {
+        "-1".to_string()
+    } else {
+        char_shape_id.to_string()
     }
 }
 
@@ -2733,7 +2779,7 @@ mod tests {
 
     // ---------- #1289: Bookmark / Field dispatcher 연결 ----------
 
-    use crate::model::control::{Bookmark, Control, Field, FieldType};
+    use crate::model::control::{Bookmark, CharOverlap, Control, Field, FieldType};
     use crate::model::paragraph::FieldRange;
 
     #[test]
@@ -2826,6 +2872,85 @@ mod tests {
             xml.contains(r#"<hp:fieldEnd beginIDRef="7"/>"#),
             "fieldEnd must be emitted even when end_char_idx == text.len(): {}",
             &xml[..400.min(xml.len())]
+        );
+    }
+
+    #[test]
+    fn hwpx_run_slot_emits_char_overlap_compose() {
+        let mut para = Paragraph {
+            text: "AB".to_string(),
+            char_count: 11,
+            char_offsets: vec![0, 9],
+            ..Default::default()
+        };
+        para.controls.push(Control::CharOverlap(CharOverlap {
+            chars: vec!['가', '나'],
+            border_type: 1,
+            inner_char_size: 80,
+            expansion: 1,
+            char_shape_ids: vec![3, 4],
+        }));
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains("<hp:compose "),
+            "compose must be emitted: {}",
+            xml
+        );
+        assert!(
+            xml.contains(r#"circleType="SHAPE_CIRCLE""#),
+            "compose border type must be preserved: {}",
+            xml
+        );
+        assert!(
+            xml.contains(r#"<hp:composeText>가나</hp:composeText>"#),
+            "compose text must be emitted: {}",
+            xml
+        );
+        assert_eq!(xml.matches("<hp:charPr ").count(), 2, "{}", xml);
+
+        let a_pos = xml.find('A').expect("A");
+        let compose_pos = xml.find("<hp:compose").expect("compose");
+        let b_pos = xml.rfind('B').expect("B");
+        assert!(
+            a_pos < compose_pos,
+            "text before compose must remain before it"
+        );
+        assert!(
+            compose_pos < b_pos,
+            "text after compose must remain after it"
+        );
+    }
+
+    #[test]
+    fn hwpx_char_overlap_preserves_negative_char_pr_ref_without_context_reference() {
+        let mut para = Paragraph {
+            text: "A".to_string(),
+            char_count: 10,
+            char_offsets: vec![8],
+            ..Default::default()
+        };
+        para.controls.push(Control::CharOverlap(CharOverlap {
+            chars: vec!['각'],
+            char_shape_ids: vec![u32::MAX],
+            ..Default::default()
+        }));
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:charPr prIDRef="-1"/>"#),
+            "negative HWPX charPr ref must be preserved as -1: {}",
+            xml
+        );
+        assert!(
+            ctx.assert_all_refs_resolved().is_ok(),
+            "-1 must not be treated as a doc_info char shape reference"
         );
     }
 
