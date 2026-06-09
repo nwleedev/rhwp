@@ -30,7 +30,8 @@ use quick_xml::Writer;
 
 use crate::model::paragraph::LineSeg;
 use crate::model::shape::{
-    CommonObjAttr, HorzAlign, HorzRelTo, TextFlow, TextWrap, VertAlign, VertRelTo,
+    Caption, CaptionDirection, CommonObjAttr, HorzAlign, HorzRelTo, TextFlow, TextWrap, VertAlign,
+    VertRelTo,
 };
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
 
@@ -89,10 +90,13 @@ pub fn write_table<W: Write>(
         ],
     )?;
 
-    // --- 자식: sz, pos, outMargin, inMargin, tr[] ---
+    // --- 자식: sz, pos, outMargin, caption, inMargin, tr[] ---
     write_sz(w, &table.common)?;
     write_pos(w, &table.common)?;
     write_out_margin(w, table)?;
+    if let Some(caption) = &table.caption {
+        write_caption(w, caption, ctx)?;
+    }
     write_in_margin(w, table)?;
 
     // tr[]: 행 단위 반복. 각 행에 속한 셀 (cell.row == r) 을 col 오름차순으로 출력.
@@ -108,6 +112,80 @@ pub fn write_table<W: Write>(
 
     end_tag(w, "hp:tbl")?;
     Ok(())
+}
+
+fn write_caption<W: Write>(
+    w: &mut Writer<W>,
+    caption: &Caption,
+    ctx: &mut SerializeContext,
+) -> Result<(), SerializeError> {
+    let gap = caption.spacing.to_string();
+    let width = caption.width.to_string();
+    let last_width = caption.max_width.to_string();
+    let full_size = bool01(caption.include_margin);
+
+    start_tag_attrs(
+        w,
+        "hp:caption",
+        &[
+            ("side", caption_side_str(caption.direction)),
+            ("gap", &gap),
+            ("width", &width),
+            ("lastWidth", &last_width),
+            ("fullSz", full_size),
+        ],
+    )?;
+
+    start_tag_attrs(
+        w,
+        "hp:subList",
+        &[
+            ("id", ""),
+            ("textDirection", "HORIZONTAL"),
+            ("lineWrap", "BREAK"),
+            ("vertAlign", "TOP"),
+            ("linkListIDRef", "0"),
+            ("linkListNextIDRef", "0"),
+            ("textWidth", &width),
+            ("textHeight", "0"),
+            ("hasTextRef", "0"),
+            ("hasNumRef", "0"),
+        ],
+    )?;
+
+    let mut vert_cursor: u32 = 0;
+    for para in caption.paragraphs.iter() {
+        ctx.para_shape_ids.reference(para.para_shape_id);
+        ctx.style_ids.reference(para.style_id as u16);
+        let (runs_xml, linesegs, advance) = render_paragraph_xml_parts(para, vert_cursor, ctx);
+        vert_cursor = advance;
+        let p_open = render_hp_p_open(para, ctx.next_para_id());
+        w.get_mut()
+            .write_all(p_open.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("table caption paragraph: {}", e)))?;
+        w.get_mut()
+            .write_all(runs_xml.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("table caption run: {}", e)))?;
+        start_tag(w, "hp:linesegarray")?;
+        w.get_mut()
+            .write_all(linesegs.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("table caption lineseg: {}", e)))?;
+        end_tag(w, "hp:linesegarray")?;
+        end_tag(w, "hp:p")?;
+    }
+
+    end_tag(w, "hp:subList")?;
+    end_tag(w, "hp:caption")?;
+    Ok(())
+}
+
+fn caption_side_str(direction: CaptionDirection) -> &'static str {
+    match direction {
+        CaptionDirection::Left => "LEFT",
+        CaptionDirection::Right => "RIGHT",
+        CaptionDirection::Top => "TOP",
+        CaptionDirection::Bottom => "BOTTOM",
+    }
 }
 
 fn write_sz<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), SerializeError> {
@@ -493,6 +571,44 @@ mod tests {
         let cz = xml.find("<hp:cellSz ").unwrap();
         let cm = xml.find("<hp:cellMargin ").unwrap();
         assert!(sl < ca && ca < cs && cs < cz && cz < cm);
+    }
+
+    #[test]
+    fn table_caption_serializes_sublist_before_in_margin() {
+        let mut t = empty_table(1, 1);
+        let mut first = Paragraph::default();
+        first.text = "caption a".to_string();
+        let mut second = Paragraph::default();
+        second.text = "caption b".to_string();
+        t.caption = Some(Caption {
+            direction: CaptionDirection::Top,
+            spacing: 120,
+            width: 3000,
+            max_width: 4000,
+            include_margin: true,
+            paragraphs: vec![first, second],
+            ..Default::default()
+        });
+
+        let xml = serialize(&t);
+        let caption_pos = xml.find("<hp:caption ").expect("caption should be emitted");
+        let in_margin_pos = xml
+            .find("<hp:inMargin ")
+            .expect("inMargin should be emitted");
+        assert!(
+            caption_pos < in_margin_pos,
+            "caption must follow outMargin and precede inMargin: {}",
+            xml
+        );
+        assert!(xml.contains(
+            r#"<hp:caption side="TOP" gap="120" width="3000" lastWidth="4000" fullSz="1">"#
+        ));
+        assert_eq!(
+            xml[caption_pos..in_margin_pos].matches("<hp:p ").count(),
+            2,
+            "caption subList should preserve both paragraphs: {}",
+            xml
+        );
     }
 
     #[test]
