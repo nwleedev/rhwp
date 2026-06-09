@@ -229,6 +229,11 @@ pub struct Field {
     pub memo_index: u32,
     /// 메모 본문 문단 리스트 (`fieldBegin type="MEMO"` 내부 subList)
     pub memo_paragraphs: Vec<Paragraph>,
+    /// HWPX 원본 `<hp:parameters>` subtree 보존용 metadata.
+    ///
+    /// 일반 HWP/HWP3 source에는 없고, HWPX roundtrip에서 field parameter child
+    /// structure를 잃지 않기 위해 사용한다.
+    pub hwpx_parameters_xml: Option<String>,
 }
 
 impl Field {

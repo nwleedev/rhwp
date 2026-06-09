@@ -803,6 +803,7 @@ fn collect_fields_from_paragraph(
                                 ctrl_data_name: Some(fname.clone()),
                                 memo_index: 0,
                                 memo_paragraphs: Vec::new(),
+                                hwpx_parameters_xml: None,
                             },
                             location: loc,
                             value,
@@ -1060,6 +1061,7 @@ mod tests {
             ctrl_data_name: None,
             memo_index: 0,
             memo_paragraphs: Vec::new(),
+            hwpx_parameters_xml: None,
         })
     }
 

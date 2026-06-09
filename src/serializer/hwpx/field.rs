@@ -15,7 +15,7 @@ use quick_xml::Writer;
 
 use crate::model::control::{Bookmark, Field, FieldType, Hyperlink};
 
-use super::utils::{empty_tag, end_tag, start_tag};
+use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
 use super::SerializeError;
 
 // =====================================================================
@@ -36,16 +36,21 @@ pub fn write_bookmark<W: Write>(w: &mut Writer<W>, bm: &Bookmark) -> Result<(), 
 pub fn write_field_begin<W: Write>(w: &mut Writer<W>, field: &Field) -> Result<(), SerializeError> {
     let id_str = field.field_id.to_string();
     let ft = field_type_str(field.field_type);
-    empty_tag(
-        w,
-        "hp:fieldBegin",
-        &[
-            ("id", &id_str),
-            ("type", ft),
-            ("name", field.ctrl_data_name.as_deref().unwrap_or("")),
-            ("editable", bool01(field.is_editable_in_form())),
-        ],
-    )
+    let attrs = [
+        ("id", id_str.as_str()),
+        ("type", ft),
+        ("name", field.ctrl_data_name.as_deref().unwrap_or("")),
+        ("editable", bool01(field.is_editable_in_form())),
+    ];
+    if let Some(parameters_xml) = field.hwpx_parameters_xml.as_deref() {
+        start_tag_attrs(w, "hp:fieldBegin", &attrs)?;
+        w.get_mut()
+            .write_all(parameters_xml.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("fieldBegin parameters: {}", e)))?;
+        end_tag(w, "hp:fieldBegin")
+    } else {
+        empty_tag(w, "hp:fieldBegin", &attrs)
+    }
 }
 
 /// `<hp:fieldEnd>` — 필드 끝 마커.
@@ -172,6 +177,32 @@ mod tests {
         let xml = to_string(|w| write_field_begin(w, &f));
         assert!(xml.contains(r#"id="42""#));
         assert!(xml.contains(r#"type="CLICKHERE""#));
+    }
+
+    #[test]
+    fn field_begin_preserves_hwpx_parameters_subtree() {
+        let mut f = Field::default();
+        f.field_type = FieldType::ClickHere;
+        f.field_id = 42;
+        f.hwpx_parameters_xml = Some(
+            r#"<hp:parameters><hp:integerParam name="Number">2</hp:integerParam><hp:stringParam name="Command">abc</hp:stringParam></hp:parameters>"#.to_string(),
+        );
+
+        let xml = to_string(|w| write_field_begin(w, &f));
+
+        assert!(xml.contains(r#"<hp:fieldBegin "#), "{}", xml);
+        assert!(xml.contains(r#"<hp:parameters>"#), "{}", xml);
+        assert!(
+            xml.contains(r#"<hp:integerParam name="Number">2</hp:integerParam>"#),
+            "{}",
+            xml
+        );
+        assert!(
+            xml.contains(r#"<hp:stringParam name="Command">abc</hp:stringParam>"#),
+            "{}",
+            xml
+        );
+        assert!(xml.contains(r#"</hp:fieldBegin>"#), "{}", xml);
     }
 
     #[test]

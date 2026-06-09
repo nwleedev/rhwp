@@ -4296,7 +4296,10 @@ fn parse_ctrl_field_begin(
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
                 if local == b"parameters" {
-                    parse_field_parameters(reader, &mut f)?;
+                    let raw_parameters = preserve_xml_subtree(reader, ce, "field parameters")?;
+                    let mut parameters_reader = Reader::from_str(&raw_parameters);
+                    parse_field_parameters(&mut parameters_reader, &mut f)?;
+                    f.hwpx_parameters_xml = Some(raw_parameters);
                 } else if local == b"subList" && f.field_type == FieldType::Memo {
                     f.memo_paragraphs = parse_sublist_paragraphs(reader, b"subList")?;
                 } else {
@@ -4317,6 +4320,48 @@ fn parse_ctrl_field_begin(
         buf.clear();
     }
     Ok(Control::Field(f))
+}
+
+fn preserve_xml_subtree(
+    reader: &mut Reader<&[u8]>,
+    start: &quick_xml::events::BytesStart<'_>,
+    context: &str,
+) -> Result<String, HwpxError> {
+    let root_name = local_name(start.name().as_ref()).to_vec();
+    let mut writer = quick_xml::Writer::new(Vec::new());
+    writer
+        .write_event(Event::Start(start.to_owned()))
+        .map_err(|e| HwpxError::XmlError(format!("{} preserve: {}", context, e)))?;
+
+    let mut buf = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Eof) => break,
+            Ok(event) => {
+                match &event {
+                    Event::Start(e) if local_name(e.name().as_ref()) == root_name.as_slice() => {
+                        depth += 1;
+                    }
+                    Event::End(e) if local_name(e.name().as_ref()) == root_name.as_slice() => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                writer
+                    .write_event(event.into_owned())
+                    .map_err(|e| HwpxError::XmlError(format!("{} preserve: {}", context, e)))?;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Err(e) => return Err(HwpxError::XmlError(format!("{}: {}", context, e))),
+        }
+        buf.clear();
+    }
+
+    String::from_utf8(writer.into_inner())
+        .map_err(|e| HwpxError::XmlError(format!("{} preserve utf8: {}", context, e)))
 }
 
 /// `<parameters>` 내부에서 Command 문자열 파라미터를 추출한다.
