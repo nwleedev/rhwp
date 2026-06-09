@@ -521,12 +521,13 @@ fn render_header_footer(
 ) -> String {
     let mut out = format!(
         concat!(
-            r#"<hp:ctrl><hp:{tag} id="0" applyPageType="{apply}">"#,
+            r#"<hp:ctrl><hp:{tag} id="{id}" applyPageType="{apply}">"#,
             r#"<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" "#,
             r#"linkListIDRef="0" linkListNextIDRef="0" textWidth="{tw}" textHeight="{th}" "#,
             r#"hasTextRef="{tr}" hasNumRef="{nr}">"#
         ),
         tag = tag,
+        id = h.id.unwrap_or(0),
         apply = apply_page_type_to_str(h.apply_to),
         tw = h.text_width,
         th = h.text_height,
@@ -551,6 +552,7 @@ fn render_header_footer(
 
 /// render_header_footer 공통 인자 묶음 (Header/Footer가 동일 필드를 가짐).
 struct HeaderFooterFields<'a> {
+    id: Option<u32>,
     apply_to: HeaderFooterApply,
     text_width: u32,
     text_height: u32,
@@ -563,6 +565,7 @@ fn render_header(h: &Header, ctx: &mut SerializeContext) -> String {
     render_header_footer(
         "header",
         HeaderFooterFields {
+            id: h.hwpx_id,
             apply_to: h.apply_to,
             text_width: h.text_width,
             text_height: h.text_height,
@@ -578,6 +581,7 @@ fn render_footer(f: &Footer, ctx: &mut SerializeContext) -> String {
     render_header_footer(
         "footer",
         HeaderFooterFields {
+            id: f.hwpx_id,
             apply_to: f.apply_to,
             text_width: f.text_width,
             text_height: f.text_height,
@@ -1287,6 +1291,34 @@ mod tests {
         assert_eq!(
             reparsed.section_def.extra_page_border_fills[1].spacing_left,
             301
+        );
+    }
+
+    #[test]
+    fn footer_roundtrip_preserves_hwpx_id() {
+        let xml = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
+  <hp:run charPrIDRef="0">
+    <hp:ctrl>
+      <hp:footer id="3" applyPageType="BOTH">
+        <hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="42520" textHeight="1000" hasTextRef="1" hasNumRef="0">
+          <hp:p id="1" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>foot</hp:t></hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray></hp:p>
+        </hp:subList>
+      </hp:footer>
+    </hp:ctrl>
+  </hp:run>
+  <hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray>
+</hp:p>
+</hs:sec>"#;
+        let section = crate::parser::hwpx::section::parse_hwpx_section(xml).unwrap();
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let out = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            out.contains(r#"<hp:footer id="3" applyPageType="BOTH">"#),
+            "footer id must be preserved after section parse/write roundtrip"
         );
     }
 

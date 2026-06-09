@@ -5,6 +5,8 @@ use super::paragraph::Paragraph;
 /// 머리말 ('head' 컨트롤)
 #[derive(Debug, Default, Clone)]
 pub struct Header {
+    /// HWPX header@id. HWP/HWP3 source에는 없으므로 None으로 둔다.
+    pub hwpx_id: Option<u32>,
     /// 적용 범위
     pub apply_to: HeaderFooterApply,
     /// 문단 리스트
@@ -28,6 +30,8 @@ pub struct Header {
 /// 꼬리말 ('foot' 컨트롤)
 #[derive(Debug, Default, Clone)]
 pub struct Footer {
+    /// HWPX footer@id. HWP/HWP3 source에는 없으므로 None으로 둔다.
+    pub hwpx_id: Option<u32>,
     /// 적용 범위
     pub apply_to: HeaderFooterApply,
     /// 문단 리스트

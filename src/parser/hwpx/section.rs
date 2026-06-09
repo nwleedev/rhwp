@@ -4010,9 +4010,7 @@ fn parse_ctrl_header(
                 header.apply_to = parse_apply_page_type(&attr_str(&attr));
             }
             b"id" => {
-                header
-                    .raw_ctrl_extra
-                    .extend_from_slice(&parse_u32(&attr).to_le_bytes());
+                header.hwpx_id = Some(parse_u32(&attr));
             }
             _ => {}
         }
@@ -4039,9 +4037,7 @@ fn parse_ctrl_footer(
                 footer.apply_to = parse_apply_page_type(&attr_str(&attr));
             }
             b"id" => {
-                footer
-                    .raw_ctrl_extra
-                    .extend_from_slice(&parse_u32(&attr).to_le_bytes());
+                footer.hwpx_id = Some(parse_u32(&attr));
             }
             _ => {}
         }
