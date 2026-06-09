@@ -24,6 +24,13 @@ pub struct Paragraph {
     pub char_offsets: Vec<u32>,
     /// 글자 모양 변경 위치 목록
     pub char_shapes: Vec<CharShapeRef>,
+    /// HWPX 원본 `<hp:run>` 경계 보존용 metadata.
+    ///
+    /// `char_shapes`는 HWP/HWP5 PARA_CHAR_SHAPE 정합을 위해 같은 `char_shape_id`
+    /// 연속 구간을 dedup한다. HWPX exact roundtrip에서는 동일 style 인접 run이나
+    /// 빈 run도 package topology에 영향을 주므로 별도 metadata로 보존한다.
+    /// 일반 편집 작업이 발생하면 stale metadata가 저장에 쓰이지 않도록 clear한다.
+    pub hwpx_run_spans: Vec<HwpxRunSpan>,
     /// 줄 레이아웃 정보
     pub line_segs: Vec<LineSeg>,
     /// 영역 태그 정보
@@ -126,6 +133,17 @@ pub struct CharShapeRef {
     /// 글자 모양이 바뀌는 시작 위치
     pub start_pos: u32,
     /// 글자 모양 ID
+    pub char_shape_id: u32,
+}
+
+/// HWPX `<hp:run>` span within a paragraph.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HwpxRunSpan {
+    /// Run start position in paragraph UTF-16 code units.
+    pub start_pos: u32,
+    /// Run end position in paragraph UTF-16 code units.
+    pub end_pos: u32,
+    /// Run `charPrIDRef`.
     pub char_shape_id: u32,
 }
 
@@ -293,6 +311,7 @@ impl Paragraph {
         if new_text.is_empty() {
             return;
         }
+        self.hwpx_run_spans.clear();
 
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
@@ -436,6 +455,7 @@ impl Paragraph {
         if count == 0 {
             return 0;
         }
+        self.hwpx_run_spans.clear();
 
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
@@ -538,6 +558,7 @@ impl Paragraph {
     /// 현재 문단은 char_offset 이전까지만 유지되고,
     /// char_offset 이후의 텍스트와 메타데이터로 새 문단을 생성하여 반환한다.
     pub fn split_at(&mut self, char_offset: usize) -> Paragraph {
+        self.hwpx_run_spans.clear();
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
         let split_pos = char_offset.min(text_len);
@@ -690,6 +711,7 @@ impl Paragraph {
             text: new_text,
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
+            hwpx_run_spans: Vec::new(),
             line_segs: new_line_segs,
             range_tags: new_range_tags,
             field_ranges: Vec::new(), // controls가 이동하지 않으므로 새 문단에는 필드 없음
@@ -717,6 +739,7 @@ impl Paragraph {
         if other.text.is_empty() {
             return self.text.chars().count();
         }
+        self.hwpx_run_spans.clear();
 
         let self_text_len = self.text.chars().count();
 

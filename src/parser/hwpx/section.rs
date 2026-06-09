@@ -18,7 +18,7 @@ use crate::model::page::{
     BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
     PageBorderFillApply, PageBorderUiBasis, PageDef,
 };
-use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
+use crate::model::paragraph::{CharShapeRef, FieldRange, HwpxRunSpan, LineSeg, Paragraph};
 use crate::model::shape::{
     ArcShape, CommonObjAttr, CurveShape, DrawingObjAttr, EllipseShape, GroupShape, HorzAlign,
     HorzRelTo, LineShape, PolygonShape, RectangleShape, ShapeComponentAttr, ShapeObject,
@@ -393,6 +393,8 @@ fn parse_paragraph(
     let mut text_parts: Vec<String> = Vec::new();
     let mut current_char_shape_id: u32 = 0;
     let mut char_shape_changes: Vec<(u32, u32)> = Vec::new(); // (utf16_pos, char_shape_id)
+    let mut hwpx_run_spans: Vec<HwpxRunSpan> = Vec::new();
+    let mut open_run: Option<HwpxRunSpan> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -402,14 +404,21 @@ fn parse_paragraph(
                 match local {
                     b"run" => {
                         // 런 시작: charPrIDRef 읽기
+                        let mut run_char_shape_id = current_char_shape_id;
                         for attr in ce.attributes().flatten() {
                             if attr.key.as_ref() == b"charPrIDRef" {
-                                current_char_shape_id = parse_u32(&attr);
+                                run_char_shape_id = parse_u32(&attr);
                             }
                         }
+                        current_char_shape_id = run_char_shape_id;
                         // 현재 UTF-16 위치에서 글자모양 변경 기록
                         let utf16_pos = calc_utf16_len_from_parts(&text_parts);
                         char_shape_changes.push((utf16_pos, current_char_shape_id));
+                        open_run = Some(HwpxRunSpan {
+                            start_pos: utf16_pos,
+                            end_pos: utf16_pos,
+                            char_shape_id: run_char_shape_id,
+                        });
                     }
                     b"t" => {
                         // 텍스트 읽기 (탭 확장 데이터 포함)
@@ -548,13 +557,20 @@ fn parse_paragraph(
                         // self-closing 빈 run (예: <hp:run charPrIDRef="42"/>)
                         // 빈 paragraph 의 char_shape 가 누락되어 default(id=0) 로
                         // 처리되면 line height 계산이 어긋나 pagination 차이 발생.
+                        let mut run_char_shape_id = current_char_shape_id;
                         for attr in ce.attributes().flatten() {
                             if attr.key.as_ref() == b"charPrIDRef" {
-                                current_char_shape_id = parse_u32(&attr);
+                                run_char_shape_id = parse_u32(&attr);
                             }
                         }
+                        current_char_shape_id = run_char_shape_id;
                         let utf16_pos = calc_utf16_len_from_parts(&text_parts);
                         char_shape_changes.push((utf16_pos, current_char_shape_id));
+                        hwpx_run_spans.push(HwpxRunSpan {
+                            start_pos: utf16_pos,
+                            end_pos: utf16_pos,
+                            char_shape_id: run_char_shape_id,
+                        });
                     }
                     b"lineBreak" | b"softHyphen" => {
                         text_parts.push("\n".to_string());
@@ -575,8 +591,17 @@ fn parse_paragraph(
             }
             Ok(Event::End(ref ee)) => {
                 let eename = ee.name();
-                if local_name(eename.as_ref()) == b"p" {
-                    break;
+                match local_name(eename.as_ref()) {
+                    b"run" => {
+                        if let Some(mut span) = open_run.take() {
+                            span.end_pos = calc_utf16_len_from_parts(&text_parts);
+                            hwpx_run_spans.push(span);
+                        }
+                    }
+                    b"p" => {
+                        break;
+                    }
+                    _ => {}
                 }
             }
             Ok(Event::Eof) => break,
@@ -681,6 +706,7 @@ fn parse_paragraph(
         });
     }
     para.char_shapes = deduped_cs;
+    para.hwpx_run_spans = hwpx_run_spans;
 
     // [Task #1058 후속] column_type/raw_break_type — HWP 정합 (스펙 표 59):
     //   bit 0 (0x01) = 구역 나누기, bit 1 (0x02) = 다단 나누기,
