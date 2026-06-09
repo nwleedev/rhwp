@@ -51,6 +51,199 @@ const runtimeIdentity = {
   pwaCleanupExpected: __RHWP_PWA_CLEANUP_EXPECTED__,
 };
 
+type UnsupportedFingerprintGetter = {
+  path: string;
+  reason: string;
+};
+
+type FormattingFingerprintParams = {
+  pageStart?: number;
+  pageEnd?: number;
+  includeLayerTree?: boolean;
+};
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function boundedPageRange(params: FormattingFingerprintParams | undefined, pageCount: number): { start: number; end: number } {
+  const requestedStart = Number.isFinite(params?.pageStart) ? Math.trunc(Number(params?.pageStart)) : 0;
+  const requestedEnd = Number.isFinite(params?.pageEnd) ? Math.trunc(Number(params?.pageEnd)) : pageCount - 1;
+  const start = Math.max(0, Math.min(requestedStart, Math.max(0, pageCount - 1)));
+  const end = Math.max(start, Math.min(requestedEnd, Math.max(0, pageCount - 1)));
+  return { start, end };
+}
+
+function incrementCounter(target: Record<string, number>, key: unknown): void {
+  if (typeof key !== 'string' && typeof key !== 'number' && typeof key !== 'boolean') return;
+  const normalized = String(key);
+  target[normalized] = (target[normalized] ?? 0) + 1;
+}
+
+function summarizeControls(layout: { controls?: unknown[] } | null | undefined): Record<string, unknown> {
+  const controls = Array.isArray(layout?.controls) ? layout.controls as Array<Record<string, unknown>> : [];
+  const byType: Record<string, number> = {};
+  const byWrap: Record<string, number> = {};
+  const byPlane: Record<string, number> = {};
+  const bounds = controls.map((control) => ({
+    type: control.type,
+    x: control.x,
+    y: control.y,
+    w: control.w,
+    h: control.h,
+    plane: control.plane,
+    zOrder: control.zOrder,
+    stableIndex: control.stableIndex,
+    wrap: control.wrap,
+    secIdx: control.secIdx,
+    paraIdx: control.paraIdx,
+    controlIdx: control.controlIdx,
+    cellIdx: control.cellIdx,
+    cellParaIdx: control.cellParaIdx,
+    headerFooter: control.headerFooter,
+    noteRef: control.noteRef,
+  }));
+
+  for (const control of controls) {
+    incrementCounter(byType, control.type);
+    incrementCounter(byWrap, control.wrap);
+    incrementCounter(byPlane, control.plane);
+  }
+
+  return {
+    count: controls.length,
+    byType,
+    byWrap,
+    byPlane,
+    bounds,
+  };
+}
+
+function summarizeLayerTree(layerTree: unknown): Record<string, unknown> {
+  const counts = {
+    objects: 0,
+    arrays: 0,
+    ops: 0,
+    byKind: {} as Record<string, number>,
+    byType: {} as Record<string, number>,
+    byWrap: {} as Record<string, number>,
+    byProfile: {} as Record<string, number>,
+  };
+
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      counts.arrays += 1;
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+
+    counts.objects += 1;
+    const objectValue = value as Record<string, unknown>;
+    incrementCounter(counts.byKind, objectValue.kind);
+    incrementCounter(counts.byType, objectValue.type);
+    incrementCounter(counts.byWrap, objectValue.wrap);
+    incrementCounter(counts.byProfile, objectValue.profile);
+    if (Array.isArray(objectValue.ops)) counts.ops += objectValue.ops.length;
+
+    for (const [key, nested] of Object.entries(objectValue)) {
+      if (key === 'data' || key === 'base64' || key === 'text') continue;
+      walk(nested);
+    }
+  };
+
+  walk(layerTree);
+  return counts;
+}
+
+function summarizeHeaderFooter(sectionIndex: number, isHeader: boolean, applyTo: number): Record<string, unknown> {
+  const raw = JSON.parse(wasm.getHeaderFooter(sectionIndex, isHeader, applyTo)) as Record<string, unknown>;
+  if (!raw.exists) return raw;
+  const text = typeof raw.text === 'string' ? raw.text : '';
+  const summary: Record<string, unknown> = { ...raw };
+  delete summary.text;
+  summary.charCount = text.length;
+  summary.lineCount = text.length === 0 ? 0 : text.split('\n').length;
+  return summary;
+}
+
+function buildFormattingFingerprint(params?: FormattingFingerprintParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  const unsupported: UnsupportedFingerprintGetter[] = [];
+  const documentInfo = wasm.getDocumentInfo();
+  const sectionCount = wasm.getSectionCount();
+  const pageCount = wasm.pageCount;
+  const pageRange = boundedPageRange(params, pageCount);
+  const includeLayerTree = params?.includeLayerTree !== false;
+
+  const safe = <T>(path: string, getter: () => T): T | null => {
+    try {
+      return getter();
+    } catch (error) {
+      unsupported.push({ path, reason: errorMessage(error) });
+      return null;
+    }
+  };
+
+  const sections = [];
+  for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex += 1) {
+    const headerFooter = [];
+    for (const isHeader of [true, false]) {
+      for (const applyTo of [0, 1, 2]) {
+        const kind = isHeader ? 'header' : 'footer';
+        const summary = safe(
+          `sections[${sectionIndex}].${kind}[${applyTo}]`,
+          () => summarizeHeaderFooter(sectionIndex, isHeader, applyTo),
+        );
+        headerFooter.push({ kind, applyTo, summary });
+      }
+    }
+    sections.push({
+      sectionIndex,
+      pageDef: safe(`sections[${sectionIndex}].pageDef`, () => wasm.getPageDef(sectionIndex)),
+      sectionDef: safe(`sections[${sectionIndex}].sectionDef`, () => wasm.getSectionDef(sectionIndex)),
+      pageBorderFill: safe(`sections[${sectionIndex}].pageBorderFill`, () => wasm.getPageBorderFill(sectionIndex)),
+      headerFooter,
+    });
+  }
+
+  const pages = [];
+  for (let pageIndex = pageRange.start; pageIndex <= pageRange.end; pageIndex += 1) {
+    const controlLayout = safe(`pages[${pageIndex}].controlLayout`, () => wasm.getPageControlLayout(pageIndex));
+    const layerTree = includeLayerTree
+      ? safe(`pages[${pageIndex}].layerTree`, () => JSON.parse(wasm.getPageLayerTree(pageIndex)))
+      : null;
+    pages.push({
+      pageIndex,
+      pageInfo: safe(`pages[${pageIndex}].pageInfo`, () => wasm.getPageInfo(pageIndex)),
+      controlLayoutSummary: summarizeControls(controlLayout),
+      layerTreeSummary: includeLayerTree ? summarizeLayerTree(layerTree) : null,
+    });
+  }
+
+  return {
+    schemaVersion: 1,
+    runtimeIdentity,
+    sourceFormat: wasm.getSourceFormat(),
+    document: documentInfo,
+    coverage: {
+      pageCount,
+      sectionCount,
+      requestedPageStart: params?.pageStart ?? null,
+      requestedPageEnd: params?.pageEnd ?? null,
+      actualPageStart: pageRange.start,
+      actualPageEnd: pageRange.end,
+      includeLayerTree,
+    },
+    sections,
+    pages,
+    unsupported,
+  };
+}
+
 // E2E 테스트용 전역 노출 (개발 모드 전용)
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
@@ -928,6 +1121,10 @@ window.addEventListener('message', async (e) => {
         break;
       case 'getRuntimeIdentity':
         reply(runtimeIdentity);
+        break;
+      case 'getFormattingFingerprint':
+        await initPromise;
+        reply(buildFormattingFingerprint(params));
         break;
       case 'loadFile': {
         await initPromise;
