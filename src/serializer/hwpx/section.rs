@@ -1429,6 +1429,52 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "PageBorderFill currently does not retain HWPX type/apply metadata in IR"]
+    fn page_pr_roundtrip_preserves_page_border_fill_type_order() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
+  <hp:run charPrIDRef="0">
+    <hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0">
+      <hp:pagePr landscape="WIDELY" width="59528" height="84186" gutterType="LEFT_ONLY">
+        <hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/>
+      </hp:pagePr>
+      <hp:pageBorderFill type="ODD" borderFillIDRef="171" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="301" right="302" top="303" bottom="304"/></hp:pageBorderFill>
+      <hp:pageBorderFill type="EVEN" borderFillIDRef="172" textBorder="CONTENT" headerInside="1" footerInside="0" fillArea="PAGE"><hp:offset left="201" right="202" top="203" bottom="204"/></hp:pageBorderFill>
+      <hp:pageBorderFill type="BOTH" borderFillIDRef="173" textBorder="PAPER" headerInside="0" footerInside="1" fillArea="BORDER"><hp:offset left="101" right="102" top="103" bottom="104"/></hp:pageBorderFill>
+    </hp:secPr>
+  </hp:run>
+  <hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        assert_eq!(
+            page_border_fill_type_sequence(xml),
+            vec!["ODD", "EVEN", "BOTH"],
+            "pageBorderFill type/apply order should survive roundtrip: {}",
+            xml
+        );
+    }
+
+    fn page_border_fill_type_sequence(xml: &str) -> Vec<&str> {
+        let mut types = Vec::new();
+        for segment in xml.split("<hp:pageBorderFill ").skip(1) {
+            if let Some(rest) = segment.strip_prefix(r#"type=""#) {
+                if let Some((value, _)) = rest.split_once('"') {
+                    types.push(value);
+                }
+            }
+        }
+        types
+    }
+
+    #[test]
     fn footer_roundtrip_preserves_hwpx_id() {
         let xml = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
 <hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
