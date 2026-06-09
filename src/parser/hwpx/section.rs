@@ -18,7 +18,9 @@ use crate::model::page::{
     BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
     PageBorderFillApply, PageBorderUiBasis, PageDef,
 };
-use crate::model::paragraph::{CharShapeRef, FieldRange, HwpxRunSpan, LineSeg, Paragraph};
+use crate::model::paragraph::{
+    CharShapeRef, FieldRange, HwpxControlSlot, HwpxRunSpan, LineSeg, Paragraph,
+};
 use crate::model::shape::{
     ArcShape, CommonObjAttr, CurveShape, DrawingObjAttr, EllipseShape, GroupShape, HorzAlign,
     HorzRelTo, LineShape, PolygonShape, RectangleShape, ShapeComponentAttr, ShapeObject,
@@ -394,6 +396,7 @@ fn parse_paragraph(
     let mut current_char_shape_id: u32 = 0;
     let mut char_shape_changes: Vec<(u32, u32)> = Vec::new(); // (utf16_pos, char_shape_id)
     let mut hwpx_run_spans: Vec<HwpxRunSpan> = Vec::new();
+    let mut hwpx_zero_width_control_slots: Vec<HwpxControlSlot> = Vec::new();
     let mut open_run: Option<HwpxRunSpan> = None;
 
     loop {
@@ -501,7 +504,13 @@ fn parse_paragraph(
                         para.controls.push(group);
                     }
                     b"ctrl" => {
-                        parse_ctrl(ce, reader, &mut para.controls, &mut text_parts)?;
+                        parse_ctrl(
+                            ce,
+                            reader,
+                            &mut para.controls,
+                            &mut text_parts,
+                            &mut hwpx_zero_width_control_slots,
+                        )?;
                     }
                     b"compose" => {
                         // 글자겹침 (CharOverlap)
@@ -707,6 +716,7 @@ fn parse_paragraph(
     }
     para.char_shapes = deduped_cs;
     para.hwpx_run_spans = hwpx_run_spans;
+    para.hwpx_zero_width_control_slots = hwpx_zero_width_control_slots;
 
     // [Task #1058 후속] column_type/raw_break_type — HWP 정합 (스펙 표 59):
     //   bit 0 (0x01) = 구역 나누기, bit 1 (0x02) = 다단 나누기,
@@ -3660,6 +3670,7 @@ fn parse_ctrl(
     reader: &mut Reader<&[u8]>,
     controls: &mut Vec<Control>,
     text_parts: &mut Vec<String>,
+    zero_width_control_slots: &mut Vec<HwpxControlSlot>,
 ) -> Result<(), HwpxError> {
     let mut buf = Vec::new();
     loop {
@@ -3733,8 +3744,11 @@ fn parse_ctrl(
                         skip_element(reader, b"pageNum")?;
                     }
                     b"bookmark" => {
+                        let control_idx = controls.len();
+                        let pos = calc_utf16_len_from_parts(text_parts);
                         let bm = parse_bookmark_attrs(ce);
                         controls.push(Control::Bookmark(bm));
+                        zero_width_control_slots.push(HwpxControlSlot { control_idx, pos });
                         skip_element(reader, b"bookmark")?;
                     }
                     b"newNum" => {
@@ -3774,8 +3788,11 @@ fn parse_ctrl(
                         text_parts.push("\u{0002}".to_string());
                     }
                     b"bookmark" => {
+                        let control_idx = controls.len();
+                        let pos = calc_utf16_len_from_parts(text_parts);
                         let bm = parse_bookmark_attrs(ce);
                         controls.push(Control::Bookmark(bm));
+                        zero_width_control_slots.push(HwpxControlSlot { control_idx, pos });
                     }
                     b"newNum" => {
                         let nn = parse_new_num_attrs(ce);

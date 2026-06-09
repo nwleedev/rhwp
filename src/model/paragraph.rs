@@ -31,6 +31,13 @@ pub struct Paragraph {
     /// 빈 run도 package topology에 영향을 주므로 별도 metadata로 보존한다.
     /// 일반 편집 작업이 발생하면 stale metadata가 저장에 쓰이지 않도록 clear한다.
     pub hwpx_run_spans: Vec<HwpxRunSpan>,
+    /// HWPX 원본에서 텍스트 폭을 차지하지 않는 control의 위치 보존용 metadata.
+    ///
+    /// 예: `<hp:bookmark>`는 `Paragraph.controls`에는 들어가지만 HWP/HWPX 텍스트
+    /// 오프셋을 8 unit 이동시키지 않는다. 위치 없이 저장하면 문단 시작으로 밀리므로,
+    /// parser가 원본 run을 읽는 시점의 UTF-16 위치와 control index를 기록한다.
+    /// 일반 편집 작업이 발생하면 stale metadata가 저장에 쓰이지 않도록 clear한다.
+    pub hwpx_zero_width_control_slots: Vec<HwpxControlSlot>,
     /// 줄 레이아웃 정보
     pub line_segs: Vec<LineSeg>,
     /// 영역 태그 정보
@@ -145,6 +152,15 @@ pub struct HwpxRunSpan {
     pub end_pos: u32,
     /// Run `charPrIDRef`.
     pub char_shape_id: u32,
+}
+
+/// HWPX zero-width control position within a paragraph.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HwpxControlSlot {
+    /// Index into `Paragraph.controls`.
+    pub control_idx: usize,
+    /// Control position in paragraph UTF-16 code units.
+    pub pos: u32,
 }
 
 /// 줄 레이아웃 정보 (HWPTAG_PARA_LINE_SEG)
@@ -312,6 +328,7 @@ impl Paragraph {
             return;
         }
         self.hwpx_run_spans.clear();
+        self.hwpx_zero_width_control_slots.clear();
 
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
@@ -456,6 +473,7 @@ impl Paragraph {
             return 0;
         }
         self.hwpx_run_spans.clear();
+        self.hwpx_zero_width_control_slots.clear();
 
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
@@ -559,6 +577,7 @@ impl Paragraph {
     /// char_offset 이후의 텍스트와 메타데이터로 새 문단을 생성하여 반환한다.
     pub fn split_at(&mut self, char_offset: usize) -> Paragraph {
         self.hwpx_run_spans.clear();
+        self.hwpx_zero_width_control_slots.clear();
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
         let split_pos = char_offset.min(text_len);
@@ -712,6 +731,7 @@ impl Paragraph {
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
             hwpx_run_spans: Vec::new(),
+            hwpx_zero_width_control_slots: Vec::new(),
             line_segs: new_line_segs,
             range_tags: new_range_tags,
             field_ranges: Vec::new(), // controls가 이동하지 않으므로 새 문단에는 필드 없음
@@ -740,6 +760,7 @@ impl Paragraph {
             return self.text.chars().count();
         }
         self.hwpx_run_spans.clear();
+        self.hwpx_zero_width_control_slots.clear();
 
         let self_text_len = self.text.chars().count();
 

@@ -22,7 +22,7 @@
 use quick_xml::Writer;
 
 use crate::model::control::{
-    AutoNumber, AutoNumberType, Control, Equation, NewNumber, PageHide, PageNumberPos,
+    AutoNumber, AutoNumberType, Bookmark, Control, Equation, NewNumber, PageHide, PageNumberPos,
 };
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
@@ -287,7 +287,20 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
         .iter()
         .filter(|control| matches!(control, Control::AutoNumber(_)))
         .count();
-    if slot_count.saturating_add(auto_number_count) != para.controls.len() {
+    let zero_width_slot_count = para.hwpx_zero_width_control_slots.len();
+    if slot_count
+        .saturating_add(auto_number_count)
+        .saturating_add(zero_width_slot_count)
+        != para.controls.len()
+    {
+        return None;
+    }
+    if !para.hwpx_zero_width_control_slots.iter().all(|slot| {
+        matches!(
+            para.controls.get(slot.control_idx),
+            Some(Control::Bookmark(_))
+        )
+    }) {
         return None;
     }
 
@@ -303,6 +316,7 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
             .get(idx)
             .copied()
             .unwrap_or(expected_utf16_pos);
+        push_hwpx_zero_width_slots_at_position(para, &mut control_idx, &mut slots, char_pos)?;
         if is_hwpx_auto_number_placeholder_at(
             para,
             idx,
@@ -346,6 +360,7 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
                 (para.controls.len() + field_ends.len()).saturating_sub(slots.len()) as u32 * 8,
             )
         });
+    push_hwpx_zero_width_slots_at_position(para, &mut control_idx, &mut slots, logical_end)?;
     while slots.len() < total_slot_count && expected_utf16_pos.saturating_add(8) <= logical_end {
         push_hwpx_slot_at_position(
             para,
@@ -359,10 +374,33 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
     }
 
     if control_idx == para.controls.len() && field_end_idx == field_ends.len() {
+        slots.sort_by_key(|slot| slot.pos);
         Some(slots)
     } else {
         None
     }
+}
+
+fn push_hwpx_zero_width_slots_at_position<'a>(
+    para: &'a Paragraph,
+    control_idx: &mut usize,
+    slots: &mut Vec<HwpxRunSlot<'a>>,
+    pos: u32,
+) -> Option<()> {
+    while para
+        .hwpx_zero_width_control_slots
+        .iter()
+        .any(|slot| slot.control_idx == *control_idx && slot.pos == pos)
+    {
+        let control = para.controls.get(*control_idx)?;
+        slots.push(HwpxRunSlot {
+            pos,
+            kind: HwpxRunSlotKind::Control(control),
+        });
+        *control_idx += 1;
+    }
+
+    Some(())
 }
 
 fn push_hwpx_slot_at_position<'a>(
@@ -477,6 +515,14 @@ fn render_hwpx_run_span_content(
                     continue;
                 }
             }
+            if is_hwpx_zero_width_span_slot(slots, *slot_idx, char_pos) {
+                let slot = &slots[*slot_idx];
+                if slot.pos >= start_pos && slot.pos < end_pos {
+                    flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+                    render_hwpx_run_slot(&mut out, &slot.kind, ctx);
+                    *slot_idx += 1;
+                }
+            }
         }
         if let Some(slots) = slots {
             while *slot_idx < slots.len() {
@@ -529,6 +575,12 @@ fn is_hwpx_auto_number_span_char(
             slot.pos == char_pos
                 && matches!(slot.kind, HwpxRunSlotKind::Control(Control::AutoNumber(_)))
         })
+}
+
+fn is_hwpx_zero_width_span_slot(slots: &[HwpxRunSlot<'_>], slot_idx: usize, char_pos: u32) -> bool {
+    slots.get(slot_idx).is_some_and(|slot| {
+        slot.pos == char_pos && matches!(slot.kind, HwpxRunSlotKind::Control(Control::Bookmark(_)))
+    })
 }
 
 fn render_hwpx_run_slot(out: &mut String, slot: &HwpxRunSlotKind<'_>, ctx: &mut SerializeContext) {
@@ -868,6 +920,7 @@ fn is_hwpx_inline_slot(control: &Control) -> bool {
             | Control::ColumnDef(_)
             | Control::Header(_)
             | Control::Footer(_)
+            | Control::Bookmark(_)
             | Control::AutoNumber(_)
     )
 }
@@ -921,6 +974,7 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
                 Err(e) => eprintln!("[hwpx] Field 직렬화 실패: {e}"),
             }
         }
+        Control::Bookmark(bm) => out.push_str(&render_bookmark(bm)),
         Control::PageHide(ph) => out.push_str(&render_page_hiding(ph)),
         Control::PageNumberPos(pn) => out.push_str(&render_page_num(pn)),
         Control::NewNumber(nn) => out.push_str(&render_new_num(nn)),
@@ -929,6 +983,18 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         Control::Footer(f) => out.push_str(&render_footer(f, ctx)),
         Control::AutoNumber(an) => out.push_str(&render_autonum(an)),
         _ => {}
+    }
+}
+
+fn render_bookmark(bm: &Bookmark) -> String {
+    match writer_to_string(|w| write_bookmark(w, bm)) {
+        Ok(xml) => {
+            let mut out = String::from("<hp:ctrl>");
+            out.push_str(&xml);
+            out.push_str("</hp:ctrl>");
+            out
+        }
+        Err(_) => String::new(),
     }
 }
 
@@ -2038,6 +2104,47 @@ mod tests {
         assert!(
             first < auto && auto < last,
             "run order should remain text, auto-number, text: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_bookmark_zero_width_span_boundary() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>
+  <hp:run charPrIDRef="8"><hp:ctrl><hp:bookmark name="mark"/></hp:ctrl><hp:t>B</hp:t></hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert_eq!(para.char_offsets, vec![0, 1]);
+        assert_eq!(para.hwpx_run_spans.len(), 2);
+        assert_eq!(para.hwpx_zero_width_control_slots.len(), 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].control_idx, 0);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].pos, 1);
+        assert!(
+            can_render_hwpx_run_spans(para),
+            "bookmark paragraph should use preserved HWPX run spans"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let first = xml
+            .find(r#"<hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>"#)
+            .unwrap_or_else(|| panic!("first text run should survive: {}", xml));
+        let bookmark = xml
+            .find(r#"<hp:run charPrIDRef="8"><hp:ctrl><hp:bookmark name="mark"/></hp:ctrl><hp:t>B</hp:t></hp:run>"#)
+            .unwrap_or_else(|| panic!("bookmark run should preserve control and text: {}", xml));
+        assert!(
+            first < bookmark,
+            "run order should remain text then bookmark run: {}",
             xml
         );
     }
