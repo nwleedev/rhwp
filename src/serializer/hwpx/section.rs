@@ -282,7 +282,12 @@ struct HwpxRunSlot<'a> {
 
 fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
     let slot_count = inferred_control_slot_count(para);
-    if slot_count != para.controls.len() {
+    let auto_number_count = para
+        .controls
+        .iter()
+        .filter(|control| matches!(control, Control::AutoNumber(_)))
+        .count();
+    if slot_count.saturating_add(auto_number_count) != para.controls.len() {
         return None;
     }
 
@@ -298,6 +303,22 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
             .get(idx)
             .copied()
             .unwrap_or(expected_utf16_pos);
+        if is_hwpx_auto_number_placeholder_at(
+            para,
+            idx,
+            c,
+            char_pos,
+            expected_utf16_pos,
+            control_idx,
+        ) {
+            slots.push(HwpxRunSlot {
+                pos: char_pos,
+                kind: HwpxRunSlotKind::Control(&para.controls[control_idx]),
+            });
+            control_idx += 1;
+            expected_utf16_pos = char_pos.saturating_add(8);
+            continue;
+        }
         while slots.len() < total_slot_count && char_pos >= expected_utf16_pos.saturating_add(8) {
             push_hwpx_slot_at_position(
                 para,
@@ -397,6 +418,31 @@ fn field_end_slots_with_positions(para: &Paragraph) -> Option<Vec<(u32, u32)>> {
     Some(positions)
 }
 
+fn is_hwpx_auto_number_placeholder_at(
+    para: &Paragraph,
+    char_idx: usize,
+    c: char,
+    char_pos: u32,
+    expected_utf16_pos: u32,
+    control_idx: usize,
+) -> bool {
+    if c != ' ' || char_pos < expected_utf16_pos {
+        return false;
+    }
+    if !matches!(para.controls.get(control_idx), Some(Control::AutoNumber(_))) {
+        return false;
+    }
+    let next_offset = para.char_offsets.get(char_idx + 1).copied();
+    next_offset.map_or_else(
+        || {
+            para.char_count
+                .checked_sub(1)
+                .is_some_and(|end| end >= char_pos.saturating_add(8))
+        },
+        |next| next >= char_pos.saturating_add(8),
+    )
+}
+
 fn render_hwpx_run_span_content(
     para: &Paragraph,
     start_pos: u32,
@@ -415,6 +461,23 @@ fn render_hwpx_run_span_content(
             .get(index)
             .copied()
             .unwrap_or(fallback_pos);
+        if let Some(slots) = slots {
+            if is_hwpx_auto_number_span_char(slots, *slot_idx, char_pos, c) {
+                let slot = &slots[*slot_idx];
+                if slot.pos < start_pos {
+                    *slot_idx += 1;
+                    fallback_pos = char_pos.saturating_add(8);
+                    continue;
+                }
+                if slot.pos >= start_pos && slot.pos < end_pos {
+                    flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+                    render_hwpx_run_slot(&mut out, &slot.kind, ctx);
+                    *slot_idx += 1;
+                    fallback_pos = char_pos.saturating_add(8);
+                    continue;
+                }
+            }
+        }
         if let Some(slots) = slots {
             while *slot_idx < slots.len() {
                 let slot = &slots[*slot_idx];
@@ -453,6 +516,19 @@ fn render_hwpx_run_span_content(
     flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
 
     out
+}
+
+fn is_hwpx_auto_number_span_char(
+    slots: &[HwpxRunSlot<'_>],
+    slot_idx: usize,
+    char_pos: u32,
+    c: char,
+) -> bool {
+    c == ' '
+        && slots.get(slot_idx).is_some_and(|slot| {
+            slot.pos == char_pos
+                && matches!(slot.kind, HwpxRunSlotKind::Control(Control::AutoNumber(_)))
+        })
 }
 
 fn render_hwpx_run_slot(out: &mut String, slot: &HwpxRunSlotKind<'_>, ctx: &mut SerializeContext) {
@@ -1890,6 +1966,78 @@ mod tests {
         assert!(
             begin_run < middle_run && middle_run < end_run,
             "run order should remain field begin, text, field end: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_auto_number_span_boundaries() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>
+  <hp:run charPrIDRef="8"><hp:ctrl><hp:autoNum num="1" numType="PAGE"><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar="." supscript="0"/></hp:autoNum></hp:ctrl></hp:run>
+  <hp:run charPrIDRef="9"><hp:t>B</hp:t></hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "A B");
+        assert_eq!(
+            para.char_offsets,
+            vec![0, 1, 9],
+            "auto-number placeholder should occupy an 8-unit slot"
+        );
+        assert_eq!(
+            para.hwpx_run_spans.len(),
+            3,
+            "auto-number run span should be retained"
+        );
+        let slots = hwpx_slots_with_positions(para).expect("auto-number slot mapping");
+        assert_eq!(slots.len(), 1, "auto-number should produce one slot");
+        assert_eq!(
+            slots[0].pos, 1,
+            "auto-number slot should start at the placeholder offset"
+        );
+        assert!(
+            matches!(
+                slots[0].kind,
+                HwpxRunSlotKind::Control(Control::AutoNumber(_))
+            ),
+            "auto-number slot should map to the auto-number control"
+        );
+        assert!(
+            can_render_hwpx_run_spans(para),
+            "auto-number paragraph should use preserved HWPX run spans"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let first = xml
+            .find(r#"<hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>"#)
+            .unwrap_or_else(|| panic!("first text run should survive: {}", xml));
+        let auto = xml
+            .find(r#"<hp:run charPrIDRef="8"><hp:ctrl><hp:autoNum "#)
+            .unwrap_or_else(|| panic!("auto-number should stay in a control-only run: {}", xml));
+        let auto_end = xml[auto..]
+            .find("</hp:run>")
+            .map(|idx| auto + idx)
+            .expect("auto-number run should be closed");
+        assert!(
+            !xml[auto..auto_end].contains("<hp:t>"),
+            "auto-number placeholder must not be emitted as text: {}",
+            xml
+        );
+        let last = xml
+            .find(r#"<hp:run charPrIDRef="9"><hp:t>B</hp:t></hp:run>"#)
+            .expect("last text run should survive");
+        assert!(
+            first < auto && auto < last,
+            "run order should remain text, auto-number, text: {}",
             xml
         );
     }

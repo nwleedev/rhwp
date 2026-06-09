@@ -4804,7 +4804,7 @@ fn calc_utf16_len_from_parts(parts: &[String]) -> u32 {
     parts
         .iter()
         .map(|s| match s.as_str() {
-            "\u{0002}" | "\u{0003}" | "\u{0004}" => 8,
+            "\u{0002}" | "\u{0003}" | "\u{0004}" | "\u{0012}" => 8,
             _ => s
                 .chars()
                 .map(|c| {
