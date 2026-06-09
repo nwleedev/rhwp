@@ -4,10 +4,16 @@ import { readFileSync, readFile } from 'fs';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
+const vendorBasePath = process.env.RHWP_STUDIO_BASE_PATH ?? '/rhwp/';
 
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __RHWP_SOURCE_COMMIT__: JSON.stringify(process.env.RHWP_SOURCE_COMMIT ?? 'unknown'),
+    __RHWP_PATCH_ID__: JSON.stringify(process.env.RHWP_PATCH_ID ?? 'unknown'),
+    __RHWP_BUILD_ID__: JSON.stringify(process.env.RHWP_BUILD_ID ?? 'development'),
+    __RHWP_STUDIO_BASE_PATH__: JSON.stringify(vendorBasePath),
+    __RHWP_PWA_CLEANUP_EXPECTED__: JSON.stringify(process.env.RHWP_PWA_CLEANUP_EXPECTED === '1'),
   },
   resolve: {
     alias: {
@@ -66,11 +72,11 @@ export default defineConfig({
         theme_color: '#2b6cb0',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: '/rhwp/',
-        scope: '/rhwp/',
+        start_url: vendorBasePath,
+        scope: vendorBasePath,
         file_handlers: [
           {
-            action: '/rhwp/',
+            action: vendorBasePath,
             accept: {
               'application/x-hwp': ['.hwp'],
               'application/hwp+zip': ['.hwpx'],

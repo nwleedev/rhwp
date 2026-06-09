@@ -41,6 +41,16 @@ const eventBus = new EventBus();
 const documentState = new DocumentDirtyState(eventBus);
 documentState.installBeforeUnload(window);
 
+const runtimeIdentity = {
+  schemaVersion: 1,
+  rhwpStudioVersion: __APP_VERSION__,
+  sourceCommit: __RHWP_SOURCE_COMMIT__,
+  patchId: __RHWP_PATCH_ID__,
+  buildId: __RHWP_BUILD_ID__,
+  basePath: __RHWP_STUDIO_BASE_PATH__,
+  pwaCleanupExpected: __RHWP_PWA_CLEANUP_EXPECTED__,
+};
+
 // E2E 테스트용 전역 노출 (개발 모드 전용)
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
@@ -915,6 +925,9 @@ window.addEventListener('message', async (e) => {
         // wasm 초기화 완료 후에만 true 응답 — race condition 방지 (#522)
         await initPromise;
         reply(true);
+        break;
+      case 'getRuntimeIdentity':
+        reply(runtimeIdentity);
         break;
       case 'loadFile': {
         await initPromise;
