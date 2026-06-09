@@ -1187,6 +1187,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "pending HWPX run segmentation preservation beyond first char shape"]
+    fn hp_run_preserves_multiple_char_shape_segments() {
+        let mut para = Paragraph::default();
+        para.text = "abcdef".to_string();
+        para.char_shapes.push(CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 10,
+        });
+        para.char_shapes.push(CharShapeRef {
+            start_pos: 3,
+            char_shape_id: 20,
+        });
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:run charPrIDRef="10"><hp:t>abc</hp:t></hp:run>"#),
+            "first char shape segment should be emitted as its own run: {}",
+            xml
+        );
+        assert!(
+            xml.contains(r#"<hp:run charPrIDRef="20"><hp:t>def</hp:t></hp:run>"#),
+            "second char shape segment should be emitted as its own run: {}",
+            xml
+        );
+    }
+
+    #[test]
     fn page_break_paragraph_emits_attr() {
         let mut para = Paragraph::default();
         para.text = "p1".to_string();
