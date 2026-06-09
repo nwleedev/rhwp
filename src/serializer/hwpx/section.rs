@@ -435,6 +435,7 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
             )?;
             expected_utf16_pos = expected_utf16_pos.saturating_add(8);
         }
+        push_hwpx_zero_width_slots_at_position(para, &mut control_idx, &mut slots, char_pos)?;
         let width = char_utf16_width(c);
         if char_pos >= expected_utf16_pos {
             expected_utf16_pos = char_pos.saturating_add(width);
@@ -462,6 +463,12 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
             expected_utf16_pos,
         )?;
         expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+        push_hwpx_zero_width_slots_at_position(
+            para,
+            &mut control_idx,
+            &mut slots,
+            expected_utf16_pos,
+        )?;
     }
 
     if control_idx == para.controls.len() && field_end_idx == field_ends.len() {
@@ -640,6 +647,18 @@ fn render_hwpx_run_span_content(
         }
     }
     if let Some(slots) = slots {
+        if start_pos == end_pos {
+            while *slot_idx < slots.len() && slots[*slot_idx].pos == start_pos {
+                let slot = &slots[*slot_idx];
+                if matches!(slot.kind, HwpxRunSlotKind::Control(Control::Bookmark(_))) {
+                    flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+                    render_hwpx_run_slot(&mut out, &slot.kind, ctx);
+                    *slot_idx += 1;
+                    continue;
+                }
+                break;
+            }
+        }
         while *slot_idx < slots.len() && slots[*slot_idx].pos < end_pos {
             let slot = &slots[*slot_idx];
             let slot_pos = slot.pos;
@@ -2236,6 +2255,75 @@ mod tests {
         assert!(
             first < bookmark,
             "run order should remain text then bookmark run: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_bookmark_after_inline_object_span_boundary() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7">
+    <hp:tbl rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="0">
+      <hp:inMargin left="0" right="0" top="0" bottom="0"/>
+      <hp:tr>
+        <hp:tc name="0" header="0" hasMargin="0" editable="0" dirty="0" borderFillIDRef="0" textDirection="HORIZONTAL" vertAlign="TOP" colAddr="0" rowAddr="0" colSpan="1" rowSpan="1" width="1000" height="1000">
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellSpan colSpan="1" rowSpan="1"/>
+          <hp:cellSz width="1000" height="1000"/>
+          <hp:cellMargin left="0" right="0" top="0" bottom="0"/>
+          <hp:subList><hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>T</hp:t></hp:run></hp:p></hp:subList>
+        </hp:tc>
+      </hp:tr>
+    </hp:tbl>
+  </hp:run>
+  <hp:run charPrIDRef="8"><hp:ctrl><hp:bookmark name="after-object"/></hp:ctrl></hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "");
+        assert!(para.char_offsets.is_empty());
+        assert_eq!(para.hwpx_run_spans.len(), 2);
+        assert_eq!(para.hwpx_zero_width_control_slots.len(), 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].control_idx, 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].pos, 8);
+        assert!(
+            can_render_hwpx_run_spans(para),
+            "bookmark after inline object should use preserved HWPX run spans"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let table_run = xml
+            .find(r#"<hp:run charPrIDRef="7">"#)
+            .unwrap_or_else(|| panic!("table run should survive: {}", xml));
+        let table_run_end = xml[table_run..]
+            .find("</hp:run>")
+            .map(|idx| table_run + idx)
+            .expect("table run should be closed");
+        assert!(
+            xml[table_run..table_run_end].contains(r#"<hp:tbl "#),
+            "table should remain inside the first run: {}",
+            xml
+        );
+        assert!(
+            !xml[table_run..table_run_end].contains("after-object"),
+            "bookmark should not be merged into the table run: {}",
+            xml
+        );
+
+        let bookmark = xml
+            .find(r#"<hp:run charPrIDRef="8"><hp:ctrl><hp:bookmark name="after-object"/></hp:ctrl></hp:run>"#)
+            .unwrap_or_else(|| panic!("bookmark-only run should survive: {}", xml));
+        assert!(
+            table_run < bookmark,
+            "run order should remain table then bookmark-only run: {}",
             xml
         );
     }
