@@ -628,6 +628,7 @@ fn parse_char_shape(data: &[u8]) -> Result<CharShape, DocInfoError> {
         underline_shape,
         strike_shape,
         kerning,
+        hwpx_char_pr_switches: Vec::new(),
     })
 }
 
@@ -655,6 +656,7 @@ fn parse_tab_def(data: &[u8]) -> Result<TabDef, DocInfoError> {
         tabs,
         auto_tab_left: (attr & 0x01) != 0,
         auto_tab_right: (attr & 0x02) != 0,
+        hwpx_tab_pr_switches: Vec::new(),
     })
 }
 
@@ -747,6 +749,7 @@ fn parse_para_shape(data: &[u8]) -> Result<ParaShape, DocInfoError> {
         line_spacing_v2,
         head_type,
         para_level,
+        hwpx_para_pr_switches: Vec::new(),
     })
 }
 

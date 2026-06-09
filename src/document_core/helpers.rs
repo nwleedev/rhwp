@@ -611,6 +611,7 @@ pub(crate) fn build_tab_def_from_json(
         tabs,
         auto_tab_left: auto_left,
         auto_tab_right: auto_right,
+        hwpx_tab_pr_switches: Vec::new(),
     }
 }
 

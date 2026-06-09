@@ -81,9 +81,12 @@ pub struct CharShape {
     pub strike_shape: u8,
     /// 커닝 여부 (bit 30)
     pub kerning: bool,
+    /// HWPX `<hh:charPr>` 하위 `<switch>` 분기 원본 XML (라운드트립 보존용)
+    pub hwpx_char_pr_switches: Vec<String>,
 }
 
-/// CharShape 비교: raw_data 필드 제외 (라운드트립용 원본 바이트는 논리적 동일성과 무관)
+/// CharShape 비교: raw_data와 HWPX 보존 metadata 제외
+/// (라운드트립용 원본 바이트/XML은 논리적 동일성과 무관)
 impl PartialEq for CharShape {
     fn eq(&self, other: &Self) -> bool {
         self.font_ids == other.font_ids
@@ -184,9 +187,12 @@ pub struct ParaShape {
     pub head_type: HeadType,
     /// 문단 수준 (0~6 → 1~7수준, attr1 bit 25~27)
     pub para_level: u8,
+    /// HWPX `<hh:paraPr>` 하위 `<switch>` 분기 원본 XML (라운드트립 보존용)
+    pub hwpx_para_pr_switches: Vec<String>,
 }
 
-/// ParaShape 비교: raw_data 필드 제외 (라운드트립용 원본 바이트는 논리적 동일성과 무관)
+/// ParaShape 비교: raw_data와 HWPX 보존 metadata 제외
+/// (라운드트립용 원본 바이트/XML은 논리적 동일성과 무관)
 impl PartialEq for ParaShape {
     fn eq(&self, other: &Self) -> bool {
         self.attr1 == other.attr1
@@ -298,6 +304,8 @@ pub struct TabDef {
     pub auto_tab_left: bool,
     /// 오른쪽 끝 자동 탭 유무
     pub auto_tab_right: bool,
+    /// HWPX `<hh:tabPr>` 하위 `<switch>` 분기 원본 XML (라운드트립 보존용)
+    pub hwpx_tab_pr_switches: Vec<String>,
 }
 
 /// 탭 항목

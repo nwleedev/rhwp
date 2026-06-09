@@ -1022,6 +1022,7 @@ impl DocumentCore {
                 }],
                 auto_tab_left: false,
                 auto_tab_right: false,
+                hwpx_tab_pr_switches: Vec::new(),
             };
             let tab_id = self.document.find_or_create_tab_def(new_td);
             para_mods.tab_def_id = Some(tab_id);

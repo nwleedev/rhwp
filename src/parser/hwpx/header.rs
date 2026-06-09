@@ -532,6 +532,10 @@ fn parse_char_shape(
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"switch" => {
+                    let raw_switch = preserve_xml_subtree(reader, ce, "charPr switch")?;
+                    cs.hwpx_char_pr_switches.push(raw_switch);
+                }
                 Ok(Event::Empty(ref ce)) | Ok(Event::Start(ref ce)) => {
                     let cname = ce.name();
                     let local = local_name(cname.as_ref());
@@ -747,6 +751,48 @@ fn parse_char_shape(
     Ok(())
 }
 
+fn preserve_xml_subtree(
+    reader: &mut Reader<&[u8]>,
+    start: &quick_xml::events::BytesStart<'_>,
+    context: &str,
+) -> Result<String, HwpxError> {
+    let root_name = local_name(start.name().as_ref()).to_vec();
+    let mut writer = quick_xml::Writer::new(Vec::new());
+    writer
+        .write_event(Event::Start(start.to_owned()))
+        .map_err(|e| HwpxError::XmlError(format!("{} preserve: {}", context, e)))?;
+
+    let mut buf = Vec::new();
+    let mut depth = 1usize;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Eof) => break,
+            Ok(event) => {
+                match &event {
+                    Event::Start(e) if local_name(e.name().as_ref()) == root_name.as_slice() => {
+                        depth += 1;
+                    }
+                    Event::End(e) if local_name(e.name().as_ref()) == root_name.as_slice() => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                writer
+                    .write_event(event.into_owned())
+                    .map_err(|e| HwpxError::XmlError(format!("{} preserve: {}", context, e)))?;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Err(e) => return Err(HwpxError::XmlError(format!("{}: {}", context, e))),
+        }
+        buf.clear();
+    }
+
+    String::from_utf8(writer.into_inner())
+        .map_err(|e| HwpxError::XmlError(format!("{} preserve utf8: {}", context, e)))
+}
+
 // ─── ParaShape ───
 
 fn parse_para_shape(
@@ -798,7 +844,7 @@ fn parse_para_shape(
                         ParaShapeChildKind::Switch => {
                             // <switch>/<case>/<default> 네임스페이스 분기 처리
                             // HwpUnitChar case를 우선 적용, 없으면 default 사용
-                            parse_para_shape_switch(reader, &mut ps)?;
+                            parse_para_shape_switch(reader, ce, &mut ps)?;
                         }
                         ParaShapeChildKind::Other => {}
                     }
@@ -1047,9 +1093,15 @@ fn parse_para_shape_margin_children(
 /// HwpUnitChar 네임스페이스 case를 우선 적용한다.
 fn parse_para_shape_switch(
     reader: &mut Reader<&[u8]>,
+    switch_start: &quick_xml::events::BytesStart<'_>,
     ps: &mut ParaShape,
 ) -> Result<(), HwpxError> {
     let mut buf = Vec::new();
+    let mut switch_writer = quick_xml::Writer::new(Vec::new());
+    switch_writer
+        .write_event(Event::Start(switch_start.to_owned()))
+        .map_err(|e| HwpxError::XmlError(format!("switch preserve: {}", e)))?;
+
     let mut in_hwpunitchar_case = false;
     let mut in_default = false;
     let mut found_case = false;
@@ -1064,122 +1116,140 @@ fn parse_para_shape_switch(
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref ce)) => {
-                let cname = ce.name();
-                let local = local_name(cname.as_ref());
-                match local {
-                    b"case" => {
-                        // required-namespace 속성 확인
-                        let is_hwpunitchar = ce.attributes().flatten().any(|attr| {
-                            let val = attr_str(&attr);
-                            val.contains("HwpUnitChar")
-                        });
-                        if is_hwpunitchar {
-                            in_hwpunitchar_case = true;
+            Ok(event) => {
+                let should_break = match &event {
+                    Event::Start(ce) => {
+                        let cname = ce.name();
+                        let local = local_name(cname.as_ref());
+                        match local {
+                            b"case" => {
+                                // required-namespace 속성 확인
+                                let is_hwpunitchar = ce.attributes().flatten().any(|attr| {
+                                    let val = attr_str(&attr);
+                                    val.contains("HwpUnitChar")
+                                });
+                                if is_hwpunitchar {
+                                    in_hwpunitchar_case = true;
+                                }
+                            }
+                            b"default" => {
+                                in_default = true;
+                            }
+                            _ => {}
                         }
+                        false
                     }
-                    b"default" => {
-                        in_default = true;
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Empty(ref ce)) => {
-                let cname = ce.name();
-                let local = local_name(cname.as_ref());
-                if in_hwpunitchar_case || in_default {
-                    match local {
-                        b"margin" | b"intent" | b"left" | b"right" | b"prev" | b"next" => {
-                            // margin 하위 요소들: <left value="..." />, <prev value="..." /> 등
-                            let tag_name = local;
-                            for attr in ce.attributes().flatten() {
-                                if attr.key.as_ref() == b"value" {
-                                    let val = parse_i32(&attr);
-                                    if in_hwpunitchar_case {
-                                        // HwpUnitChar 값은 실제 HWPUNIT(1× 스케일)이므로
-                                        // HWP 바이너리와 동일한 2× 스케일로 변환
-                                        let val2x = val * 2;
-                                        match tag_name {
-                                            b"left" => ps.margin_left = val2x,
-                                            b"right" => ps.margin_right = val2x,
-                                            b"intent" => ps.indent = val2x,
-                                            b"prev" => ps.spacing_before = val2x,
-                                            b"next" => ps.spacing_after = val2x,
+                    Event::Empty(ce) => {
+                        let cname = ce.name();
+                        let local = local_name(cname.as_ref());
+                        if in_hwpunitchar_case || in_default {
+                            match local {
+                                b"margin" | b"intent" | b"left" | b"right" | b"prev" | b"next" => {
+                                    // margin 하위 요소들: <left value="..." />, <prev value="..." /> 등
+                                    let tag_name = local;
+                                    for attr in ce.attributes().flatten() {
+                                        if attr.key.as_ref() == b"value" {
+                                            let val = parse_i32(&attr);
+                                            if in_hwpunitchar_case {
+                                                // HwpUnitChar 값은 실제 HWPUNIT(1× 스케일)이므로
+                                                // HWP 바이너리와 동일한 2× 스케일로 변환
+                                                let val2x = val * 2;
+                                                match tag_name {
+                                                    b"left" => ps.margin_left = val2x,
+                                                    b"right" => ps.margin_right = val2x,
+                                                    b"intent" => ps.indent = val2x,
+                                                    b"prev" => ps.spacing_before = val2x,
+                                                    b"next" => ps.spacing_after = val2x,
+                                                    _ => {}
+                                                }
+                                                found_case = true;
+                                            } else if in_default {
+                                                match tag_name {
+                                                    b"left" => def_margin_left = Some(val),
+                                                    b"right" => def_margin_right = Some(val),
+                                                    b"intent" => def_indent = Some(val),
+                                                    b"prev" => def_prev = Some(val),
+                                                    b"next" => def_next = Some(val),
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                b"lineSpacing" => {
+                                    let mut ls_type = None;
+                                    let mut ls_val = None;
+                                    for attr in ce.attributes().flatten() {
+                                        match attr.key.as_ref() {
+                                            b"type" => {
+                                                ls_type = Some(match attr_str(&attr).as_str() {
+                                                    "PERCENT" => LineSpacingType::Percent,
+                                                    "FIXED" => LineSpacingType::Fixed,
+                                                    "SPACEONLY" | "SPACE_ONLY" => {
+                                                        LineSpacingType::SpaceOnly
+                                                    }
+                                                    "MINIMUM" | "AT_LEAST" => {
+                                                        LineSpacingType::Minimum
+                                                    }
+                                                    _ => LineSpacingType::Percent,
+                                                });
+                                            }
+                                            b"value" => ls_val = Some(parse_i32(&attr)),
                                             _ => {}
+                                        }
+                                    }
+                                    if in_hwpunitchar_case {
+                                        if let Some(t) = ls_type {
+                                            ps.line_spacing_type = t;
+                                        }
+                                        if let Some(v) = ls_val {
+                                            // Fixed/SpaceOnly/Minimum은 HWPUNIT이므로 2× 스케일 변환
+                                            let effective_type =
+                                                ls_type.unwrap_or(ps.line_spacing_type);
+                                            ps.line_spacing = match effective_type {
+                                                LineSpacingType::Percent => v,
+                                                _ => v * 2,
+                                            };
                                         }
                                         found_case = true;
                                     } else if in_default {
-                                        match tag_name {
-                                            b"left" => def_margin_left = Some(val),
-                                            b"right" => def_margin_right = Some(val),
-                                            b"intent" => def_indent = Some(val),
-                                            b"prev" => def_prev = Some(val),
-                                            b"next" => def_next = Some(val),
-                                            _ => {}
-                                        }
+                                        def_line_spacing_type = ls_type;
+                                        def_line_spacing = ls_val;
                                     }
                                 }
+                                _ => {}
                             }
                         }
-                        b"lineSpacing" => {
-                            let mut ls_type = None;
-                            let mut ls_val = None;
-                            for attr in ce.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"type" => {
-                                        ls_type = Some(match attr_str(&attr).as_str() {
-                                            "PERCENT" => LineSpacingType::Percent,
-                                            "FIXED" => LineSpacingType::Fixed,
-                                            "SPACEONLY" | "SPACE_ONLY" => {
-                                                LineSpacingType::SpaceOnly
-                                            }
-                                            "MINIMUM" | "AT_LEAST" => LineSpacingType::Minimum,
-                                            _ => LineSpacingType::Percent,
-                                        });
-                                    }
-                                    b"value" => ls_val = Some(parse_i32(&attr)),
-                                    _ => {}
-                                }
+                        false
+                    }
+                    Event::End(ee) => {
+                        let ename = ee.name();
+                        let local = local_name(ename.as_ref());
+                        match local {
+                            b"case" => {
+                                in_hwpunitchar_case = false;
+                                false
                             }
-                            if in_hwpunitchar_case {
-                                if let Some(t) = ls_type {
-                                    ps.line_spacing_type = t;
-                                }
-                                if let Some(v) = ls_val {
-                                    // Fixed/SpaceOnly/Minimum은 HWPUNIT이므로 2× 스케일 변환
-                                    let effective_type = ls_type.unwrap_or(ps.line_spacing_type);
-                                    ps.line_spacing = match effective_type {
-                                        LineSpacingType::Percent => v,
-                                        _ => v * 2,
-                                    };
-                                }
-                                found_case = true;
-                            } else if in_default {
-                                def_line_spacing_type = ls_type;
-                                def_line_spacing = ls_val;
+                            b"default" => {
+                                in_default = false;
+                                false
                             }
+                            b"switch" => true,
+                            _ => false,
                         }
-                        _ => {}
                     }
+                    Event::Eof => true,
+                    _ => false,
+                };
+
+                switch_writer
+                    .write_event(event.into_owned())
+                    .map_err(|e| HwpxError::XmlError(format!("switch preserve: {}", e)))?;
+                if should_break {
+                    break;
                 }
             }
-            Ok(Event::End(ref ee)) => {
-                let ename = ee.name();
-                let local = local_name(ename.as_ref());
-                match local {
-                    b"case" => {
-                        in_hwpunitchar_case = false;
-                    }
-                    b"default" => {
-                        in_default = false;
-                    }
-                    b"switch" => break,
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
             Err(e) => return Err(HwpxError::XmlError(format!("switch: {}", e))),
-            _ => {}
         }
         buf.clear();
     }
@@ -1208,6 +1278,10 @@ fn parse_para_shape_switch(
             ps.line_spacing = v;
         }
     }
+
+    let raw_switch = String::from_utf8(switch_writer.into_inner())
+        .map_err(|e| HwpxError::XmlError(format!("switch preserve utf8: {}", e)))?;
+    ps.hwpx_para_pr_switches.push(raw_switch);
 
     Ok(())
 }
@@ -1557,6 +1631,13 @@ fn parse_tab_def(
         let mut default_tabs: Vec<TabItem> = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"switch" => {
+                    let (switch_found_case, mut switch_default_tabs, raw_switch) =
+                        parse_tab_def_switch(reader, ce, &mut td)?;
+                    found_case |= switch_found_case;
+                    default_tabs.append(&mut switch_default_tabs);
+                    td.hwpx_tab_pr_switches.push(raw_switch);
+                }
                 Ok(Event::Start(ref ce)) => {
                     let cname = ce.name();
                     let local = local_name(cname.as_ref());
@@ -1624,6 +1705,98 @@ fn parse_tab_def(
 
     doc_info.tab_defs.push(td);
     Ok(())
+}
+
+fn parse_tab_def_switch(
+    reader: &mut Reader<&[u8]>,
+    switch_start: &quick_xml::events::BytesStart<'_>,
+    td: &mut TabDef,
+) -> Result<(bool, Vec<TabItem>, String), HwpxError> {
+    let mut switch_writer = quick_xml::Writer::new(Vec::new());
+    switch_writer
+        .write_event(Event::Start(switch_start.to_owned()))
+        .map_err(|e| HwpxError::XmlError(format!("tabPr switch preserve: {}", e)))?;
+
+    let mut buf = Vec::new();
+    let mut in_hwpunitchar_case = false;
+    let mut in_default = false;
+    let mut found_case = false;
+    let mut default_tabs: Vec<TabItem> = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(event) => {
+                let should_break = match &event {
+                    Event::Start(ce) => {
+                        let cname = ce.name();
+                        let local = local_name(cname.as_ref());
+                        match local {
+                            b"case" => {
+                                let is_hwpunitchar = ce
+                                    .attributes()
+                                    .flatten()
+                                    .any(|attr| attr_str(&attr).contains("HwpUnitChar"));
+                                if is_hwpunitchar {
+                                    in_hwpunitchar_case = true;
+                                }
+                            }
+                            b"default" => {
+                                in_default = true;
+                            }
+                            _ => {}
+                        }
+                        false
+                    }
+                    Event::Empty(ce) => {
+                        let cname = ce.name();
+                        let local = local_name(cname.as_ref());
+                        if local == b"tabItem" {
+                            let mut item = parse_tab_item(ce);
+                            if in_hwpunitchar_case {
+                                item.position *= 2;
+                                td.tabs.push(item);
+                                found_case = true;
+                            } else if in_default {
+                                default_tabs.push(item);
+                            }
+                        }
+                        false
+                    }
+                    Event::End(ee) => {
+                        let ename = ee.name();
+                        let local = local_name(ename.as_ref());
+                        match local {
+                            b"case" => {
+                                in_hwpunitchar_case = false;
+                                false
+                            }
+                            b"default" => {
+                                in_default = false;
+                                false
+                            }
+                            b"switch" => true,
+                            _ => false,
+                        }
+                    }
+                    Event::Eof => true,
+                    _ => false,
+                };
+
+                switch_writer
+                    .write_event(event.into_owned())
+                    .map_err(|e| HwpxError::XmlError(format!("tabPr switch preserve: {}", e)))?;
+                if should_break {
+                    break;
+                }
+            }
+            Err(e) => return Err(HwpxError::XmlError(format!("tabPr switch: {}", e))),
+        }
+        buf.clear();
+    }
+
+    let raw_switch = String::from_utf8(switch_writer.into_inner())
+        .map_err(|e| HwpxError::XmlError(format!("tabPr switch preserve utf8: {}", e)))?;
+    Ok((found_case, default_tabs, raw_switch))
 }
 
 // ─── Numbering ───

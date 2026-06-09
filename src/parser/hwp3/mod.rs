@@ -257,6 +257,7 @@ pub(crate) fn convert_para_shape(
             tabs: tab_items,
             auto_tab_left: false,
             auto_tab_right: false,
+            hwpx_tab_pr_switches: Vec::new(),
         };
         let id = doc_tab_defs.iter().position(|td| *td == new_td);
         ps.tab_def_id = match id {

@@ -151,6 +151,7 @@ fn test_serialize_char_shape_roundtrip() {
         underline_shape: 0,
         strike_shape: 0,
         kerning: false,
+        hwpx_char_pr_switches: Vec::new(),
     };
 
     let data = serialize_char_shape(&cs);
@@ -207,6 +208,7 @@ fn test_serialize_para_shape_roundtrip() {
         line_spacing_v2: 0,
         head_type: crate::model::style::HeadType::None,
         para_level: 0,
+        hwpx_para_pr_switches: Vec::new(),
     };
 
     let data = serialize_para_shape(&ps);
@@ -394,6 +396,7 @@ fn test_serialize_tab_def() {
         }],
         auto_tab_left: true,
         auto_tab_right: true,
+        hwpx_tab_pr_switches: Vec::new(),
     };
 
     let data = serialize_tab_def(&td);
@@ -463,6 +466,7 @@ fn test_serialize_doc_info_roundtrip() {
         underline_shape: 0,
         strike_shape: 0,
         kerning: false,
+        hwpx_char_pr_switches: Vec::new(),
     });
     doc_info.para_shapes.push(ParaShape {
         raw_data: None,
@@ -484,6 +488,7 @@ fn test_serialize_doc_info_roundtrip() {
         line_spacing_v2: 0,
         head_type: crate::model::style::HeadType::None,
         para_level: 0,
+        hwpx_para_pr_switches: Vec::new(),
     });
     doc_info.styles.push(Style {
         raw_data: None,

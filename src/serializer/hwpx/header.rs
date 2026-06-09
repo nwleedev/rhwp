@@ -474,6 +474,10 @@ fn write_char_pr<W: Write>(
         empty_tag(w, "hh:subscript", &[])?;
     }
 
+    for switch_xml in &cs.hwpx_char_pr_switches {
+        write_preserved_hwpx_switch(w, "charPr", switch_xml)?;
+    }
+
     end_tag(w, "hh:charPr")?;
     Ok(())
 }
@@ -594,20 +598,26 @@ fn write_tab_pr<W: Write>(w: &mut Writer<W>, id: u16, td: &TabDef) -> Result<(),
     ];
     let attrs_ref: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    if td.tabs.is_empty() {
+    if td.tabs.is_empty() && td.hwpx_tab_pr_switches.is_empty() {
         empty_tag(w, "hh:tabPr", &attrs_ref)?;
     } else {
         start_tag_attrs(w, "hh:tabPr", &attrs_ref)?;
-        for tab in &td.tabs {
-            empty_tag(
-                w,
-                "hh:tabItem",
-                &[
-                    ("pos", &tab.position.to_string()),
-                    ("type", tab_type_str(tab.tab_type)),
-                    ("leader", tab_leader_str(tab.fill_type)),
-                ],
-            )?;
+        if td.hwpx_tab_pr_switches.is_empty() {
+            for tab in &td.tabs {
+                empty_tag(
+                    w,
+                    "hh:tabItem",
+                    &[
+                        ("pos", &tab.position.to_string()),
+                        ("type", tab_type_str(tab.tab_type)),
+                        ("leader", tab_leader_str(tab.fill_type)),
+                    ],
+                )?;
+            }
+        } else {
+            for switch_xml in &td.hwpx_tab_pr_switches {
+                write_preserved_hwpx_switch(w, "tabPr", switch_xml)?;
+            }
         }
         end_tag(w, "hh:tabPr")?;
     }
@@ -779,24 +789,30 @@ fn write_para_pr<W: Write>(
         ],
     )?;
 
-    // <hh:margin>: 자식 4개 (intent, left, right, prev, next) — 단위/값 지정
-    super::utils::start_tag(w, "hh:margin")?;
-    write_margin_child(w, "hh:intent", ps.indent)?;
-    write_margin_child(w, "hh:left", ps.margin_left)?;
-    write_margin_child(w, "hh:right", ps.margin_right)?;
-    write_margin_child(w, "hh:prev", ps.spacing_before)?;
-    write_margin_child(w, "hh:next", ps.spacing_after)?;
-    end_tag(w, "hh:margin")?;
+    if ps.hwpx_para_pr_switches.is_empty() {
+        // <hh:margin>: 자식 4개 (intent, left, right, prev, next) — 단위/값 지정
+        super::utils::start_tag(w, "hh:margin")?;
+        write_margin_child(w, "hh:intent", ps.indent)?;
+        write_margin_child(w, "hh:left", ps.margin_left)?;
+        write_margin_child(w, "hh:right", ps.margin_right)?;
+        write_margin_child(w, "hh:prev", ps.spacing_before)?;
+        write_margin_child(w, "hh:next", ps.spacing_after)?;
+        end_tag(w, "hh:margin")?;
 
-    empty_tag(
-        w,
-        "hh:lineSpacing",
-        &[
-            ("type", line_spacing_type_str(ps.line_spacing_type)),
-            ("value", &ps.line_spacing.to_string()),
-            ("unit", "HWPUNIT"),
-        ],
-    )?;
+        empty_tag(
+            w,
+            "hh:lineSpacing",
+            &[
+                ("type", line_spacing_type_str(ps.line_spacing_type)),
+                ("value", &ps.line_spacing.to_string()),
+                ("unit", "HWPUNIT"),
+            ],
+        )?;
+    } else {
+        for switch_xml in &ps.hwpx_para_pr_switches {
+            write_preserved_hwpx_switch(w, "paraPr", switch_xml)?;
+        }
+    }
 
     empty_tag(
         w,
@@ -820,6 +836,16 @@ fn write_para_pr<W: Write>(
 
     end_tag(w, "hh:paraPr")?;
     Ok(())
+}
+
+fn write_preserved_hwpx_switch<W: Write>(
+    w: &mut Writer<W>,
+    owner: &str,
+    switch_xml: &str,
+) -> Result<(), SerializeError> {
+    w.get_mut()
+        .write_all(switch_xml.as_bytes())
+        .map_err(|e| SerializeError::XmlError(format!("{} switch preserve: {}", owner, e)))
 }
 
 fn write_margin_child<W: Write>(
@@ -981,7 +1007,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending HWPX paraPr switch branch preservation design"]
     fn write_header_preserves_para_pr_switch_branch_structure() {
         let header_xml = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
@@ -1007,6 +1032,7 @@ mod tests {
               <hc:prev value="0" unit="HWPUNIT"/>
               <hc:next value="0" unit="HWPUNIT"/>
             </hh:margin>
+            <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
           </hp:case>
           <hp:default>
             <hh:margin>
@@ -1016,6 +1042,7 @@ mod tests {
               <hc:prev value="0" unit="HWPUNIT"/>
               <hc:next value="0" unit="HWPUNIT"/>
             </hh:margin>
+            <hh:lineSpacing type="PERCENT" value="180" unit="HWPUNIT"/>
           </hp:default>
         </hp:switch>
       </hh:paraPr>
@@ -1048,6 +1075,67 @@ mod tests {
             xml.matches("<hp:default").count(),
             1,
             "paraPr switch default must survive header roundtrip: {xml}"
+        );
+        assert_eq!(
+            xml.matches(r#"<hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>"#)
+                .count(),
+            1,
+            "paraPr switch case lineSpacing must survive header roundtrip: {xml}"
+        );
+        assert_eq!(
+            xml.matches(r#"<hh:lineSpacing type="PERCENT" value="180" unit="HWPUNIT"/>"#)
+                .count(),
+            1,
+            "paraPr switch default lineSpacing must survive header roundtrip: {xml}"
+        );
+    }
+
+    #[test]
+    fn write_header_preserves_tab_pr_switch_branch_structure() {
+        let header_xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
+  xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hh:refList>
+    <hh:tabProperties itemCnt="1">
+      <hh:tabPr id="0" autoTabLeft="0" autoTabRight="0">
+        <hp:switch>
+          <hp:case required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar">
+            <hh:tabItem pos="1200" type="LEFT" leader="NONE"/>
+          </hp:case>
+          <hp:default>
+            <hh:tabItem pos="2400" type="LEFT" leader="NONE"/>
+          </hp:default>
+        </hp:switch>
+      </hh:tabPr>
+    </hh:tabProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, doc_properties) =
+            crate::parser::hwpx::header::parse_hwpx_header(header_xml).expect("parse tab switch");
+        let doc = Document {
+            doc_info,
+            doc_properties,
+            ..Document::default()
+        };
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+
+        assert_eq!(xml.matches("<hh:tabPr ").count(), 1);
+        assert_eq!(xml.matches("<hp:switch").count(), 1, "{xml}");
+        assert_eq!(xml.matches("<hp:case").count(), 1, "{xml}");
+        assert_eq!(xml.matches("<hp:default").count(), 1, "{xml}");
+        assert_eq!(
+            xml.matches(r#"<hh:tabItem pos="1200" type="LEFT" leader="NONE"/>"#)
+                .count(),
+            1,
+            "{xml}"
+        );
+        assert_eq!(
+            xml.matches(r#"<hh:tabItem pos="2400" type="LEFT" leader="NONE"/>"#)
+                .count(),
+            1,
+            "{xml}"
         );
     }
 
