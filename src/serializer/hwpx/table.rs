@@ -35,7 +35,7 @@ use crate::model::shape::{
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
 
 use super::context::SerializeContext;
-use super::section::{first_run_char_shape_id, render_hp_p_open, render_paragraph_parts};
+use super::section::{render_hp_p_open, render_paragraph_xml_parts};
 use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
 use super::SerializeError;
 
@@ -253,23 +253,15 @@ fn write_sub_list<W: Write>(
     for para in cell.paragraphs.iter() {
         ctx.para_shape_ids.reference(para.para_shape_id);
         ctx.style_ids.reference(para.style_id as u16);
-        if let Some(cs_ref) = para.char_shapes.first() {
-            ctx.char_shape_ids.reference(cs_ref.char_shape_id);
-        }
-
-        let (t_xml, linesegs, advance) = render_paragraph_parts(para, vert_cursor, ctx);
+        let (runs_xml, linesegs, advance) = render_paragraph_xml_parts(para, vert_cursor, ctx);
         vert_cursor = advance;
         let p_open = render_hp_p_open(para, ctx.next_para_id());
         w.get_mut()
             .write_all(p_open.as_bytes())
             .map_err(|e| SerializeError::XmlError(format!("table cell paragraph: {}", e)))?;
-        let cs = first_run_char_shape_id(para);
-        let cs_str = cs.to_string();
-        start_tag_attrs(w, "hp:run", &[("charPrIDRef", &cs_str)])?;
         w.get_mut()
-            .write_all(t_xml.as_bytes())
+            .write_all(runs_xml.as_bytes())
             .map_err(|e| SerializeError::XmlError(format!("table cell run: {}", e)))?;
-        end_tag(w, "hp:run")?;
 
         start_tag(w, "hp:linesegarray")?;
         w.get_mut()

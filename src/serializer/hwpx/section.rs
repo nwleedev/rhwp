@@ -16,7 +16,7 @@
 //!   - `paragraph.para_shape_id` → `<hp:p paraPrIDRef>`
 //!   - `paragraph.style_id` → `<hp:p styleIDRef>`
 //!   - `paragraph.column_type` → `<hp:p pageBreak/columnBreak>`
-//!   - `paragraph.char_shapes[0].char_shape_id` → 첫 `<hp:run charPrIDRef>`
+//!   - `paragraph.char_shapes` → text-only 문단의 `<hp:run charPrIDRef>` 구간
 //!   - `paragraph.line_segs[i]` → 각 `<hp:lineseg>` 속성 (9개 필드 그대로 출력)
 
 use quick_xml::Writer;
@@ -48,8 +48,8 @@ const PARA_CLOSE: &str = "</hp:p></hs:sec>";
 // 템플릿 내 첫 <hp:p> 태그의 실제 문자열 (id="3121190098" 랜덤 해시 포함).
 // 템플릿은 정적이므로 이 문자열이 고정 위치에 있음이 보장됨.
 const TEMPLATE_FIRST_P_TAG: &str = r#"<hp:p id="3121190098" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">"#;
-// 템플릿 내 <hp:run charPrIDRef="0"> 직후에 TEXT_SLOT 이 오는 패턴.
-const TEMPLATE_RUN_BEFORE_TEXT: &str = r#"<hp:run charPrIDRef="0"><hp:t/>"#;
+// 템플릿 내 본문 텍스트용 run. 앞의 secPr/colPr run과 구분되는 두 번째 run이다.
+const TEMPLATE_TEXT_RUN: &str = r#"<hp:run charPrIDRef="0"><hp:t/></hp:run>"#;
 
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
@@ -68,13 +68,20 @@ pub fn write_section(
     let mut vert_cursor: u32 = 0;
 
     let first_para = section.paragraphs.first();
-    let (first_t, first_linesegs, first_advance) = match first_para {
-        Some(p) => render_paragraph_parts(p, vert_cursor, ctx),
-        None => render_paragraph_parts_for_text("", vert_cursor),
+    let (first_body, first_linesegs, first_advance) = match first_para {
+        Some(p) => render_paragraph_xml_parts(p, vert_cursor, ctx),
+        None => {
+            let (text, linesegs, advance) = render_paragraph_parts_for_text("", vert_cursor);
+            (
+                format!(r#"<hp:run charPrIDRef="0">{}</hp:run>"#, text),
+                linesegs,
+                advance,
+            )
+        }
     };
     vert_cursor = first_advance;
 
-    let mut out = EMPTY_SECTION_XML.replacen(TEXT_SLOT, &first_t, 1);
+    let mut out = EMPTY_SECTION_XML.replacen(TEMPLATE_TEXT_RUN, &first_body, 1);
     out = replace_first_linesegs(&out, &first_linesegs);
     out = replace_page_pr(&out, &section.section_def.page_def);
     out = replace_page_border_fills(&out, &section.section_def);
@@ -83,30 +90,17 @@ pub fn write_section(
     if let Some(p) = first_para {
         let new_p_tag = render_hp_p_open(p, ctx.next_para_id());
         out = out.replacen(TEMPLATE_FIRST_P_TAG, &new_p_tag, 1);
-
-        // 첫 문단의 텍스트용 <hp:run> 의 charPrIDRef 를 IR 기반으로 교체
-        // 템플릿에서 TEXT_SLOT 이 있던 자리 바로 앞의 <hp:run charPrIDRef="0"> 패턴.
-        let first_run_cs = first_run_char_shape_id(p);
-        let new_run = format!(r#"<hp:run charPrIDRef="{}">"#, first_run_cs);
-        let replacement = format!("{}{}", new_run, &first_t);
-        // 이미 first_t 는 out 에 들어갔으므로 그 직전의 <hp:run charPrIDRef="0"> 만 변경
-        let anchor = format!("{}{}", r#"<hp:run charPrIDRef="0">"#, &first_t);
-        if out.contains(&anchor) {
-            out = out.replacen(&anchor, &replacement, 1);
-        }
     }
 
     // 추가 문단: `</hp:p></hs:sec>` 직전에 `<hp:p>` 요소를 삽입.
     if section.paragraphs.len() > 1 {
         let mut extra = String::new();
         for p in section.paragraphs.iter().skip(1) {
-            let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
+            let (runs, linesegs, advance) = render_paragraph_xml_parts(p, vert_cursor, ctx);
             vert_cursor = advance;
-            let cs = first_run_char_shape_id(p);
             extra.push_str(&render_hp_p_open(p, ctx.next_para_id()));
-            extra.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
-            extra.push_str(&t);
-            extra.push_str(r#"</hp:run><hp:linesegarray>"#);
+            extra.push_str(&runs);
+            extra.push_str(r#"<hp:linesegarray>"#);
             extra.push_str(&linesegs);
             extra.push_str(r#"</hp:linesegarray></hp:p>"#);
         }
@@ -143,6 +137,24 @@ pub(crate) fn first_run_char_shape_id(p: &Paragraph) -> u32 {
     p.char_shapes.first().map(|r| r.char_shape_id).unwrap_or(0)
 }
 
+/// Paragraph 하나를 (`<hp:run>` XML, lineseg XML, 다음 vert_cursor)로 변환한다.
+pub(crate) fn render_paragraph_xml_parts(
+    para: &Paragraph,
+    vert_start: u32,
+    ctx: &mut SerializeContext,
+) -> (String, String, u32) {
+    let runs_xml = render_paragraph_runs(para, ctx);
+
+    if !para.line_segs.is_empty() {
+        let linesegs = render_lineseg_array_from_ir(&para.line_segs);
+        let vert_end = next_vert_cursor_from_ir(&para.line_segs, vert_start);
+        (runs_xml, linesegs, vert_end)
+    } else {
+        let (linesegs, vert_end) = render_lineseg_array_fallback(&para.text, vert_start);
+        (runs_xml, linesegs, vert_end)
+    }
+}
+
 /// Paragraph 하나를 (`<hp:t>` XML, lineseg XML, 다음 vert_cursor)로 변환.
 ///
 /// `<hp:lineseg>` 출력 원칙 (#177):
@@ -165,6 +177,103 @@ pub(crate) fn render_paragraph_parts(
         let (linesegs, vert_end) = render_lineseg_array_fallback(&para.text, vert_start);
         (t_xml, linesegs, vert_end)
     }
+}
+
+/// Paragraph의 HWPX run 목록을 직렬화한다.
+///
+/// 원본 HWPX의 동일 style run 경계는 현재 IR에 없으므로 exact topology는 복원하지 못한다.
+/// 대신 `Paragraph.char_shapes`에 남아 있는 서로 다른 character style segment는 text-only
+/// 문단에서 semantic run으로 재구성한다.
+pub(crate) fn render_paragraph_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
+    if can_render_char_shape_runs(para) {
+        let runs = render_text_char_shape_runs(para, ctx);
+        if !runs.is_empty() {
+            return runs;
+        }
+    }
+
+    let cs = first_run_char_shape_id(para);
+    reference_char_shape_if_applicable(ctx, cs);
+    format!(
+        r#"<hp:run charPrIDRef="{}">{}</hp:run>"#,
+        cs,
+        render_run_content(para, ctx)
+    )
+}
+
+fn can_render_char_shape_runs(para: &Paragraph) -> bool {
+    para.controls.is_empty() && para.field_ranges.is_empty() && para.char_shapes.len() > 1
+}
+
+fn render_text_char_shape_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
+    let mut shape_index = 0usize;
+    let mut current_shape_id = para.char_shapes[0].char_shape_id;
+    let mut expected_utf16_pos = 0u32;
+    let mut segment_text = String::new();
+    let mut tab_idx = 0usize;
+    let mut out = String::new();
+
+    for (char_index, c) in para.text.chars().enumerate() {
+        let char_pos = para
+            .char_offsets
+            .get(char_index)
+            .copied()
+            .unwrap_or(expected_utf16_pos);
+
+        while shape_index + 1 < para.char_shapes.len()
+            && char_pos >= para.char_shapes[shape_index + 1].start_pos
+        {
+            flush_run_segment(
+                &mut out,
+                &mut segment_text,
+                current_shape_id,
+                &para.tab_extended,
+                &mut tab_idx,
+                ctx,
+            );
+            shape_index += 1;
+            current_shape_id = para.char_shapes[shape_index].char_shape_id;
+        }
+
+        segment_text.push(c);
+        expected_utf16_pos = char_pos.saturating_add(char_utf16_width(c));
+    }
+
+    flush_run_segment(
+        &mut out,
+        &mut segment_text,
+        current_shape_id,
+        &para.tab_extended,
+        &mut tab_idx,
+        ctx,
+    );
+
+    out
+}
+
+fn reference_char_shape_if_applicable(ctx: &mut SerializeContext, char_shape_id: u32) {
+    if ctx.char_shape_ids.registered_count() > 0 || char_shape_id != 0 {
+        ctx.char_shape_ids.reference(char_shape_id);
+    }
+}
+
+fn flush_run_segment(
+    out: &mut String,
+    segment_text: &mut String,
+    char_shape_id: u32,
+    tab_extended: &[[u16; 7]],
+    tab_idx: &mut usize,
+    ctx: &mut SerializeContext,
+) {
+    if segment_text.is_empty() {
+        return;
+    }
+
+    reference_char_shape_if_applicable(ctx, char_shape_id);
+    out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, char_shape_id));
+    out.push_str(&render_hp_t_content(segment_text, tab_extended, tab_idx));
+    out.push_str("</hp:run>");
+    segment_text.clear();
 }
 
 /// IR 없이 텍스트만 있을 때 `<hp:t>` 와 fallback lineseg 생성.
@@ -536,13 +645,11 @@ fn render_header_footer(
     );
     let mut vert_cursor: u32 = 0;
     for p in h.paragraphs.iter() {
-        let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
+        let (runs, linesegs, advance) = render_paragraph_xml_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
-        let cs = first_run_char_shape_id(p);
         out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
-        out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
-        out.push_str(&t);
-        out.push_str(r#"</hp:run><hp:linesegarray>"#);
+        out.push_str(&runs);
+        out.push_str(r#"<hp:linesegarray>"#);
         out.push_str(&linesegs);
         out.push_str(r#"</hp:linesegarray></hp:p>"#);
     }
@@ -776,13 +883,11 @@ fn render_note_sublist(
     );
     let mut vert_cursor: u32 = 0;
     for p in paragraphs.iter() {
-        let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
+        let (runs, linesegs, advance) = render_paragraph_xml_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
-        let cs = first_run_char_shape_id(p);
         out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
-        out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
-        out.push_str(&t);
-        out.push_str(r#"</hp:run><hp:linesegarray>"#);
+        out.push_str(&runs);
+        out.push_str(r#"<hp:linesegarray>"#);
         out.push_str(&linesegs);
         out.push_str(r#"</hp:linesegarray></hp:p>"#);
     }
@@ -1126,10 +1231,10 @@ fn page_border_fill_fill_area(page_border_fill: &PageBorderFill) -> &'static str
     }
 }
 
-// `TEMPLATE_RUN_BEFORE_TEXT` 는 패턴 인식용 상수로만 쓰이므로 명시 참조.
+// `TEMPLATE_TEXT_RUN` 는 패턴 인식용 상수로만 쓰이므로 명시 참조.
 #[allow(dead_code)]
 fn _template_anchor_hint() {
-    let _ = TEMPLATE_RUN_BEFORE_TEXT;
+    let _ = TEMPLATE_TEXT_RUN;
 }
 
 #[cfg(test)]
@@ -1187,7 +1292,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending HWPX run segmentation preservation beyond first char shape"]
     fn hp_run_preserves_multiple_char_shape_segments() {
         let mut para = Paragraph::default();
         para.text = "abcdef".to_string();
