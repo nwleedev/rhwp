@@ -209,21 +209,24 @@ pub(crate) fn render_paragraph_runs(para: &Paragraph, ctx: &mut SerializeContext
 }
 
 fn can_render_hwpx_run_spans(para: &Paragraph) -> bool {
-    if !para.controls.is_empty() || !para.field_ranges.is_empty() || para.hwpx_run_spans.is_empty()
-    {
+    if !para.field_ranges.is_empty() || para.hwpx_run_spans.is_empty() {
+        return false;
+    }
+    if !para.controls.is_empty() && hwpx_inline_slots_with_positions(para).is_none() {
         return false;
     }
 
     let text_end = paragraph_text_utf16_len(para);
+    let logical_end = text_end.saturating_add(para.controls.len() as u32 * 8);
     let mut cursor = 0u32;
     for span in &para.hwpx_run_spans {
-        if span.start_pos > span.end_pos || span.start_pos != cursor || span.end_pos > text_end {
+        if span.start_pos > span.end_pos || span.start_pos != cursor || span.end_pos > logical_end {
             return false;
         }
         cursor = span.end_pos;
     }
 
-    cursor == text_end
+    cursor == logical_end
 }
 
 fn paragraph_text_utf16_len(para: &Paragraph) -> u32 {
@@ -233,26 +236,79 @@ fn paragraph_text_utf16_len(para: &Paragraph) -> u32 {
 fn render_hwpx_run_spans(para: &Paragraph, ctx: &mut SerializeContext) -> String {
     let mut out = String::new();
     let mut tab_idx = 0usize;
+    let inline_slots = hwpx_inline_slots_with_positions(para);
+    let mut slot_idx = 0usize;
 
     for span in &para.hwpx_run_spans {
         reference_char_shape_if_applicable(ctx, span.char_shape_id);
         out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, span.char_shape_id));
-        let segment = text_for_utf16_range(para, span.start_pos, span.end_pos);
-        if !segment.is_empty() {
-            out.push_str(&render_hp_t_content(
-                &segment,
-                &para.tab_extended,
-                &mut tab_idx,
-            ));
-        }
+        out.push_str(&render_hwpx_run_span_content(
+            para,
+            span.start_pos,
+            span.end_pos,
+            inline_slots.as_deref(),
+            &mut slot_idx,
+            &mut tab_idx,
+            ctx,
+        ));
         out.push_str("</hp:run>");
     }
 
     out
 }
 
-fn text_for_utf16_range(para: &Paragraph, start_pos: u32, end_pos: u32) -> String {
+fn hwpx_inline_slots_with_positions(para: &Paragraph) -> Option<Vec<(&Control, u32)>> {
+    let slot_count = inferred_control_slot_count(para);
+    let slots: Vec<&Control> = if slot_count == para.controls.len() {
+        para.controls.iter().collect()
+    } else {
+        return None;
+    };
+    if slots.iter().any(|control| !is_hwpx_inline_slot(control)) {
+        return None;
+    }
+
+    let mut positions = Vec::with_capacity(slots.len());
+    let mut slot_idx = 0usize;
+    let mut expected_utf16_pos = 0u32;
+    for (idx, c) in para.text.chars().enumerate() {
+        let char_pos = para
+            .char_offsets
+            .get(idx)
+            .copied()
+            .unwrap_or(expected_utf16_pos);
+        while slot_idx < slots.len() && char_pos >= expected_utf16_pos.saturating_add(8) {
+            positions.push((slots[slot_idx], expected_utf16_pos));
+            slot_idx += 1;
+            expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+        }
+        let width = char_utf16_width(c);
+        if char_pos >= expected_utf16_pos {
+            expected_utf16_pos = char_pos.saturating_add(width);
+        } else {
+            expected_utf16_pos = expected_utf16_pos.saturating_add(width);
+        }
+    }
+    while slot_idx < slots.len() {
+        positions.push((slots[slot_idx], expected_utf16_pos));
+        slot_idx += 1;
+        expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+    }
+
+    Some(positions)
+}
+
+fn render_hwpx_run_span_content(
+    para: &Paragraph,
+    start_pos: u32,
+    end_pos: u32,
+    inline_slots: Option<&[(&Control, u32)]>,
+    slot_idx: &mut usize,
+    tab_idx: &mut usize,
+    ctx: &mut SerializeContext,
+) -> String {
     let mut out = String::new();
+    let mut text_buf = String::new();
     let mut fallback_pos = 0u32;
     for (index, c) in para.text.chars().enumerate() {
         let char_pos = para
@@ -260,12 +316,41 @@ fn text_for_utf16_range(para: &Paragraph, start_pos: u32, end_pos: u32) -> Strin
             .get(index)
             .copied()
             .unwrap_or(fallback_pos);
+        if let Some(slots) = inline_slots {
+            while *slot_idx < slots.len() {
+                let (control, slot_pos) = slots[*slot_idx];
+                if slot_pos < start_pos {
+                    *slot_idx += 1;
+                    continue;
+                }
+                if slot_pos >= end_pos || slot_pos >= char_pos {
+                    break;
+                }
+                if slot_pos >= start_pos {
+                    flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+                    render_control_slot(&mut out, control, ctx);
+                }
+                *slot_idx += 1;
+            }
+        }
         let char_end = char_pos.saturating_add(char_utf16_width(c));
         fallback_pos = char_end;
         if char_pos >= start_pos && char_end <= end_pos {
-            out.push(c);
+            text_buf.push(c);
         }
     }
+    if let Some(slots) = inline_slots {
+        while *slot_idx < slots.len() && slots[*slot_idx].1 < end_pos {
+            let (control, slot_pos) = slots[*slot_idx];
+            if slot_pos >= start_pos {
+                flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+                render_control_slot(&mut out, control, ctx);
+            }
+            *slot_idx += 1;
+        }
+    }
+    flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+
     out
 }
 
@@ -1440,6 +1525,73 @@ mod tests {
         assert!(xml.contains(r#"<hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>"#));
         assert!(xml.contains(r#"<hp:run charPrIDRef="7"><hp:t>B</hp:t></hp:run>"#));
         assert!(xml.contains(r#"<hp:run charPrIDRef="7"></hp:run>"#));
+    }
+
+    #[test]
+    fn hp_run_preserves_inline_object_span_boundaries() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>
+  <hp:run charPrIDRef="8">
+    <hp:tbl rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="0">
+      <hp:inMargin left="0" right="0" top="0" bottom="0"/>
+      <hp:tr>
+        <hp:tc name="0" header="0" hasMargin="0" editable="0" dirty="0" borderFillIDRef="0" textDirection="HORIZONTAL" vertAlign="TOP" colAddr="0" rowAddr="0" colSpan="1" rowSpan="1" width="1000" height="1000">
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellSpan colSpan="1" rowSpan="1"/>
+          <hp:cellSz width="1000" height="1000"/>
+          <hp:cellMargin left="0" right="0" top="0" bottom="0"/>
+          <hp:subList><hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>T</hp:t></hp:run></hp:p></hp:subList>
+        </hp:tc>
+      </hp:tr>
+    </hp:tbl>
+  </hp:run>
+  <hp:run charPrIDRef="9"><hp:t>B</hp:t></hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert_eq!(
+            para.hwpx_run_spans.len(),
+            3,
+            "object-bearing run spans should be retained"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let first = xml
+            .find(r#"<hp:run charPrIDRef="7"><hp:t>A</hp:t></hp:run>"#)
+            .expect("first text run should survive");
+        let table_run = xml
+            .find(r#"<hp:run charPrIDRef="8">"#)
+            .expect("table run should survive");
+        let table = xml[table_run..]
+            .find(r#"<hp:tbl "#)
+            .map(|idx| table_run + idx)
+            .expect("table should remain in the charPrIDRef=8 run");
+        let table_run_end = xml[table_run..]
+            .find("</hp:run>")
+            .map(|idx| table_run + idx)
+            .expect("table run should be closed");
+        assert!(
+            table < table_run_end,
+            "table should be serialized before the charPrIDRef=8 run closes: {}",
+            xml
+        );
+        let last = xml
+            .find(r#"<hp:run charPrIDRef="9"><hp:t>B</hp:t></hp:run>"#)
+            .expect("last text run should survive");
+        assert!(
+            first < table_run && table_run < last,
+            "run order should remain text, table, text: {}",
+            xml
+        );
     }
 
     #[test]
