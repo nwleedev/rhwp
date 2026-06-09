@@ -125,15 +125,7 @@ impl SerializeContext {
         for sec in &doc.sections {
             for para in &sec.paragraphs {
                 for ctrl in &para.controls {
-                    if let Control::Table(tbl) = ctrl {
-                        ctx.border_fill_ids.register(tbl.border_fill_id);
-                        for zone in &tbl.zones {
-                            ctx.border_fill_ids.register(zone.border_fill_id);
-                        }
-                        for cell in &tbl.cells {
-                            ctx.border_fill_ids.register(cell.border_fill_id);
-                        }
-                    }
+                    ctx.register_control_refs(ctrl);
                 }
             }
         }
@@ -219,6 +211,23 @@ impl SerializeContext {
         let id = self.para_id_counter;
         self.para_id_counter += 1;
         id
+    }
+
+    fn register_control_refs(&mut self, ctrl: &Control) {
+        if let Control::Table(tbl) = ctrl {
+            self.border_fill_ids.register(tbl.border_fill_id);
+            for zone in &tbl.zones {
+                self.border_fill_ids.register(zone.border_fill_id);
+            }
+            for cell in &tbl.cells {
+                self.border_fill_ids.register(cell.border_fill_id);
+                for para in &cell.paragraphs {
+                    for nested_ctrl in &para.controls {
+                        self.register_control_refs(nested_ctrl);
+                    }
+                }
+            }
+        }
     }
 }
 

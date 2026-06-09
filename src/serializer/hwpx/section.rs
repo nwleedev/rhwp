@@ -120,7 +120,7 @@ pub fn write_section(
 ///
 /// `id` 는 문단 순서 기반(0, 1, 2, ...)로 할당한다. 한컴 샘플은 랜덤 해시도 쓰지만
 /// 파서는 id 를 무시하므로 순차값으로 충분.
-fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
+pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
     let page_break = if matches!(p.column_type, ColumnBreakType::Page) {
         1
     } else {
@@ -139,7 +139,7 @@ fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
 
 /// 문단 첫 run 의 charPrIDRef. IR의 `char_shapes[0].char_shape_id` 사용.
 /// 비어있으면 0 (기본 글자모양) 반환.
-fn first_run_char_shape_id(p: &Paragraph) -> u32 {
+pub(crate) fn first_run_char_shape_id(p: &Paragraph) -> u32 {
     p.char_shapes.first().map(|r| r.char_shape_id).unwrap_or(0)
 }
 
@@ -148,7 +148,7 @@ fn first_run_char_shape_id(p: &Paragraph) -> u32 {
 /// `<hp:lineseg>` 출력 원칙 (#177):
 /// - `para.line_segs` 가 비어있지 않으면 **IR 값 그대로 출력**
 /// - 비어있을 때만 텍스트 내 `\n` 기반으로 fallback 생성 (빈 문단·`Document::default()` 호환)
-fn render_paragraph_parts(
+pub(crate) fn render_paragraph_parts(
     para: &Paragraph,
     vert_start: u32,
     ctx: &mut SerializeContext,

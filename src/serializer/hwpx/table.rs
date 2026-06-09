@@ -35,6 +35,7 @@ use crate::model::shape::{
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
 
 use super::context::SerializeContext;
+use super::section::{first_run_char_shape_id, render_hp_p_open, render_paragraph_parts};
 use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
 use super::SerializeError;
 
@@ -246,7 +247,9 @@ fn write_sub_list<W: Write>(
         ],
     )?;
 
-    // 셀 내부 문단 재귀 — 각 문단은 간단한 <hp:p><hp:run><hp:t>텍스트</hp:t></hp:run></hp:p> 구조
+    let mut vert_cursor: u32 = 0;
+
+    // 셀 내부 문단 재귀 — section/header/footer와 같은 paragraph rendering 경로를 사용한다.
     for para in cell.paragraphs.iter() {
         ctx.para_shape_ids.reference(para.para_shape_id);
         ctx.style_ids.reference(para.style_id as u16);
@@ -254,51 +257,24 @@ fn write_sub_list<W: Write>(
             ctx.char_shape_ids.reference(cs_ref.char_shape_id);
         }
 
-        let pi_str = ctx.next_para_id().to_string();
-        let ppr = para.para_shape_id.to_string();
-        let sp = para.style_id.to_string();
-        start_tag_attrs(
-            w,
-            "hp:p",
-            &[
-                ("id", &pi_str),
-                ("paraPrIDRef", &ppr),
-                ("styleIDRef", &sp),
-                ("pageBreak", "0"),
-                ("columnBreak", "0"),
-                ("merged", "0"),
-            ],
-        )?;
-
-        let cs = para
-            .char_shapes
-            .first()
-            .map(|r| r.char_shape_id)
-            .unwrap_or(0);
+        let (t_xml, linesegs, advance) = render_paragraph_parts(para, vert_cursor, ctx);
+        vert_cursor = advance;
+        let p_open = render_hp_p_open(para, ctx.next_para_id());
+        w.get_mut()
+            .write_all(p_open.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("table cell paragraph: {}", e)))?;
+        let cs = first_run_char_shape_id(para);
         let cs_str = cs.to_string();
         start_tag_attrs(w, "hp:run", &[("charPrIDRef", &cs_str)])?;
-        // 텍스트만 출력 (탭·소프트브레이크는 Stage 3 범위에서 제외 — section.rs 와 동일 방식으로 단순화)
-        write_cell_text(w, &para.text)?;
+        w.get_mut()
+            .write_all(t_xml.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("table cell run: {}", e)))?;
         end_tag(w, "hp:run")?;
 
-        // <hp:linesegarray> 최소 1개 lineseg
         start_tag(w, "hp:linesegarray")?;
-        let line_flags = LineSeg::TAG_SINGLE_SEGMENT_LINE.to_string();
-        empty_tag(
-            w,
-            "hp:lineseg",
-            &[
-                ("textpos", "0"),
-                ("vertpos", "0"),
-                ("vertsize", "1000"),
-                ("textheight", "1000"),
-                ("baseline", "850"),
-                ("spacing", "600"),
-                ("horzpos", "0"),
-                ("horzsize", "12964"),
-                ("flags", line_flags.as_str()),
-            ],
-        )?;
+        w.get_mut()
+            .write_all(linesegs.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("table cell lineseg: {}", e)))?;
         end_tag(w, "hp:linesegarray")?;
 
         end_tag(w, "hp:p")?;
