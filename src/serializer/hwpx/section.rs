@@ -27,6 +27,7 @@ use crate::model::control::{
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
+use crate::model::page::PageBorderFill;
 use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, TextWrap, VertAlign, VertRelTo,
@@ -76,6 +77,7 @@ pub fn write_section(
     let mut out = EMPTY_SECTION_XML.replacen(TEXT_SLOT, &first_t, 1);
     out = replace_first_linesegs(&out, &first_linesegs);
     out = replace_page_pr(&out, &section.section_def.page_def);
+    out = replace_page_border_fills(&out, &section.section_def);
 
     // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
     if let Some(p) = first_para {
@@ -1009,6 +1011,7 @@ fn replace_page_pr(xml: &str, page_def: &crate::model::page::PageDef) -> String 
     // 템플릿의 pagePr 여는 태그(고정 문자열) → IR 기반으로 교체.
     const TEMPLATE_PAGE_PR: &str =
         r#"<hp:pagePr landscape="WIDELY" width="59528" height="84186" gutterType="LEFT_ONLY">"#;
+    const TEMPLATE_MARGIN: &str = r#"<hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/>"#;
     let landscape = if page_def.landscape {
         "NARROWLY"
     } else {
@@ -1018,11 +1021,104 @@ fn replace_page_pr(xml: &str, page_def: &crate::model::page::PageDef) -> String 
         r#"<hp:pagePr landscape="{}" width="{}" height="{}" gutterType="LEFT_ONLY">"#,
         landscape, page_def.width, page_def.height,
     );
-    if xml.contains(TEMPLATE_PAGE_PR) {
+    let out = if xml.contains(TEMPLATE_PAGE_PR) {
         xml.replacen(TEMPLATE_PAGE_PR, &new_page_pr, 1)
     } else {
         // 템플릿이 변경됐거나 이미 치환된 경우 — 원본 유지(회귀 방지).
         xml.to_string()
+    };
+    if out.contains(TEMPLATE_MARGIN) {
+        out.replacen(TEMPLATE_MARGIN, &render_page_margin(page_def), 1)
+    } else {
+        out
+    }
+}
+
+const TEMPLATE_PAGE_BORDER_FILLS: &str = concat!(
+    r#"<hp:pageBorderFill type="BOTH" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"#,
+    r#"<hp:pageBorderFill type="EVEN" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"#,
+    r#"<hp:pageBorderFill type="ODD" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"#,
+);
+
+fn render_page_margin(page_def: &crate::model::page::PageDef) -> String {
+    format!(
+        r#"<hp:margin header="{}" footer="{}" gutter="{}" left="{}" right="{}" top="{}" bottom="{}"/>"#,
+        page_def.margin_header,
+        page_def.margin_footer,
+        page_def.margin_gutter,
+        page_def.margin_left,
+        page_def.margin_right,
+        page_def.margin_top,
+        page_def.margin_bottom,
+    )
+}
+
+fn replace_page_border_fills(
+    xml: &str,
+    section_def: &crate::model::document::SectionDef,
+) -> String {
+    if !should_render_page_border_fills(section_def) || !xml.contains(TEMPLATE_PAGE_BORDER_FILLS) {
+        return xml.to_string();
+    }
+
+    let mut rendered = String::new();
+    rendered.push_str(&render_page_border_fill(
+        "BOTH",
+        &section_def.page_border_fill,
+    ));
+    for (idx, page_border_fill) in section_def.extra_page_border_fills.iter().enumerate() {
+        let apply_type = match idx {
+            0 => "EVEN",
+            1 => "ODD",
+            _ => "BOTH",
+        };
+        rendered.push_str(&render_page_border_fill(apply_type, page_border_fill));
+    }
+    xml.replacen(TEMPLATE_PAGE_BORDER_FILLS, &rendered, 1)
+}
+
+fn should_render_page_border_fills(section_def: &crate::model::document::SectionDef) -> bool {
+    let page_border_fill = &section_def.page_border_fill;
+    page_border_fill.border_fill_id != 0
+        || page_border_fill.attr != 0
+        || page_border_fill.spacing_left != 0
+        || page_border_fill.spacing_right != 0
+        || page_border_fill.spacing_top != 0
+        || page_border_fill.spacing_bottom != 0
+        || !section_def.extra_page_border_fills.is_empty()
+}
+
+fn render_page_border_fill(apply_type: &str, page_border_fill: &PageBorderFill) -> String {
+    format!(
+        r#"<hp:pageBorderFill type="{}" borderFillIDRef="{}" textBorder="{}" headerInside="{}" footerInside="{}" fillArea="{}"><hp:offset left="{}" right="{}" top="{}" bottom="{}"/></hp:pageBorderFill>"#,
+        apply_type,
+        page_border_fill.border_fill_id,
+        page_border_fill_text_border(page_border_fill),
+        u8::from(page_border_fill.attr & 0x0000_0002 != 0),
+        u8::from(page_border_fill.attr & 0x0000_0004 != 0),
+        page_border_fill_fill_area(page_border_fill),
+        page_border_fill.spacing_left,
+        page_border_fill.spacing_right,
+        page_border_fill.spacing_top,
+        page_border_fill.spacing_bottom,
+    )
+}
+
+fn page_border_fill_text_border(page_border_fill: &PageBorderFill) -> &'static str {
+    if page_border_fill.attr & 0x0000_0001 != 0 {
+        "PAPER"
+    } else {
+        "CONTENT"
+    }
+}
+
+fn page_border_fill_fill_area(page_border_fill: &PageBorderFill) -> &'static str {
+    if page_border_fill.attr & 0x0000_0008 != 0 {
+        "PAGE"
+    } else if page_border_fill.attr & 0x0000_0010 != 0 {
+        "BORDER"
+    } else {
+        "PAPER"
     }
 }
 
@@ -1114,6 +1210,84 @@ mod tests {
         assert!(xml.contains(r#"styleIDRef="0""#));
         // char_shapes 가 비어있으면 fallback 0
         assert!(xml.contains(r#"<hp:run charPrIDRef="0">"#));
+    }
+
+    #[test]
+    fn page_pr_roundtrip_preserves_page_def_margins() {
+        let mut para = Paragraph::default();
+        para.text = "x".to_string();
+        let (doc, mut section) = make_doc_with_paragraph(para);
+        section.section_def.page_def.margin_left = 5668;
+        section.section_def.page_def.margin_right = 5668;
+        section.section_def.page_def.margin_top = 2836;
+        section.section_def.page_def.margin_bottom = 2836;
+        section.section_def.page_def.margin_header = 2836;
+        section.section_def.page_def.margin_footer = 2836;
+        section.section_def.page_def.margin_gutter = 0;
+
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        let reparsed = crate::parser::hwpx::section::parse_hwpx_section(xml).unwrap();
+        let page_def = reparsed.section_def.page_def;
+
+        assert_eq!(page_def.margin_left, 5668, "margin_left");
+        assert_eq!(page_def.margin_right, 5668, "margin_right");
+        assert_eq!(page_def.margin_top, 2836, "margin_top");
+        assert_eq!(page_def.margin_bottom, 2836, "margin_bottom");
+        assert_eq!(page_def.margin_header, 2836, "margin_header");
+        assert_eq!(page_def.margin_footer, 2836, "margin_footer");
+        assert_eq!(page_def.margin_gutter, 0, "margin_gutter");
+    }
+
+    #[test]
+    fn page_pr_roundtrip_preserves_page_border_fills() {
+        let mut para = Paragraph::default();
+        para.text = "x".to_string();
+        let (doc, mut section) = make_doc_with_paragraph(para);
+        section.section_def.page_border_fill.border_fill_id = 168;
+        section.section_def.page_border_fill.attr = 0x0000_0001;
+        section.section_def.page_border_fill.spacing_left = 101;
+        section.section_def.page_border_fill.spacing_right = 102;
+        section.section_def.page_border_fill.spacing_top = 103;
+        section.section_def.page_border_fill.spacing_bottom = 104;
+
+        let mut even = section.section_def.page_border_fill.clone();
+        even.border_fill_id = 169;
+        even.spacing_left = 201;
+        let mut odd = section.section_def.page_border_fill.clone();
+        odd.border_fill_id = 170;
+        odd.spacing_left = 301;
+        section.section_def.extra_page_border_fills.push(even);
+        section.section_def.extra_page_border_fills.push(odd);
+
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        let reparsed = crate::parser::hwpx::section::parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(reparsed.section_def.page_border_fill.border_fill_id, 168);
+        assert_eq!(reparsed.section_def.page_border_fill.spacing_left, 101);
+        assert_eq!(reparsed.section_def.page_border_fill.spacing_right, 102);
+        assert_eq!(reparsed.section_def.page_border_fill.spacing_top, 103);
+        assert_eq!(reparsed.section_def.page_border_fill.spacing_bottom, 104);
+        assert_eq!(reparsed.section_def.extra_page_border_fills.len(), 2);
+        assert_eq!(
+            reparsed.section_def.extra_page_border_fills[0].border_fill_id,
+            169
+        );
+        assert_eq!(
+            reparsed.section_def.extra_page_border_fills[0].spacing_left,
+            201
+        );
+        assert_eq!(
+            reparsed.section_def.extra_page_border_fills[1].border_fill_id,
+            170
+        );
+        assert_eq!(
+            reparsed.section_def.extra_page_border_fills[1].spacing_left,
+            301
+        );
     }
 
     #[test]
