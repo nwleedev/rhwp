@@ -421,11 +421,17 @@ fn parse_paragraph(
                             start_pos: utf16_pos,
                             end_pos: utf16_pos,
                             char_shape_id: run_char_shape_id,
+                            empty_t_count: 0,
                         });
                     }
                     b"t" => {
                         // 텍스트 읽기 (탭 확장 데이터 포함)
                         let (text, tab_exts) = read_text_content_with_tabs(reader)?;
+                        if text.is_empty() && tab_exts.is_empty() {
+                            if let Some(span) = open_run.as_mut() {
+                                span.empty_t_count += 1;
+                            }
+                        }
                         text_parts.push(text);
                         para.tab_extended.extend(tab_exts);
                     }
@@ -579,7 +585,13 @@ fn parse_paragraph(
                             start_pos: utf16_pos,
                             end_pos: utf16_pos,
                             char_shape_id: run_char_shape_id,
+                            empty_t_count: 0,
                         });
+                    }
+                    b"t" => {
+                        if let Some(span) = open_run.as_mut() {
+                            span.empty_t_count += 1;
+                        }
                     }
                     b"lineBreak" | b"softHyphen" => {
                         text_parts.push("\n".to_string());

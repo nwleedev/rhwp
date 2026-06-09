@@ -348,8 +348,7 @@ fn render_hwpx_run_spans(para: &Paragraph, ctx: &mut SerializeContext) -> String
         out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, span.char_shape_id));
         out.push_str(&render_hwpx_run_span_content(
             para,
-            span.start_pos,
-            span.end_pos,
+            span,
             slots.as_deref(),
             &mut slot_idx,
             &mut tab_idx,
@@ -581,8 +580,7 @@ fn is_hwpx_auto_number_placeholder_at(
 
 fn render_hwpx_run_span_content(
     para: &Paragraph,
-    start_pos: u32,
-    end_pos: u32,
+    span: &crate::model::paragraph::HwpxRunSpan,
     slots: Option<&[HwpxRunSlot<'_>]>,
     slot_idx: &mut usize,
     tab_idx: &mut usize,
@@ -591,6 +589,8 @@ fn render_hwpx_run_span_content(
     let mut out = String::new();
     let mut text_buf = String::new();
     let mut fallback_pos = 0u32;
+    let start_pos = span.start_pos;
+    let end_pos = span.end_pos;
     for (index, c) in para.text.chars().enumerate() {
         let char_pos = para
             .char_offsets
@@ -670,6 +670,9 @@ fn render_hwpx_run_span_content(
         }
     }
     flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
+    for _ in 0..span.empty_t_count {
+        out.push_str(&render_hp_t_content("", &para.tab_extended, tab_idx));
+    }
 
     out
 }
@@ -2324,6 +2327,54 @@ mod tests {
         assert!(
             table_run < bookmark,
             "run order should remain table then bookmark-only run: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_empty_t_child_after_inline_object() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7">
+    <hp:tbl rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="0">
+      <hp:inMargin left="0" right="0" top="0" bottom="0"/>
+      <hp:tr>
+        <hp:tc name="0" header="0" hasMargin="0" editable="0" dirty="0" borderFillIDRef="0" textDirection="HORIZONTAL" vertAlign="TOP" colAddr="0" rowAddr="0" colSpan="1" rowSpan="1" width="1000" height="1000">
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellSpan colSpan="1" rowSpan="1"/>
+          <hp:cellSz width="1000" height="1000"/>
+          <hp:cellMargin left="0" right="0" top="0" bottom="0"/>
+          <hp:subList><hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>T</hp:t></hp:run></hp:p></hp:subList>
+        </hp:tc>
+      </hp:tr>
+    </hp:tbl>
+    <hp:t/>
+  </hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.hwpx_run_spans.len(), 1);
+        assert_eq!(para.hwpx_run_spans[0].empty_t_count, 1);
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let table_run = xml
+            .find(r#"<hp:run charPrIDRef="7">"#)
+            .unwrap_or_else(|| panic!("table run should survive: {}", xml));
+        assert!(
+            xml[table_run..].contains(r#"<hp:tbl "#),
+            "table should remain inside the run: {}",
+            xml
+        );
+        assert!(
+            xml[table_run..].contains(r#"<hp:t></hp:t></hp:run>"#),
+            "empty hp:t child should be preserved inside the run: {}",
             xml
         );
     }

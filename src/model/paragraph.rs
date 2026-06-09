@@ -152,6 +152,8 @@ pub struct HwpxRunSpan {
     pub end_pos: u32,
     /// Run `charPrIDRef`.
     pub char_shape_id: u32,
+    /// Number of empty `<hp:t>` children originally present in this run.
+    pub empty_t_count: usize,
 }
 
 /// HWPX zero-width control position within a paragraph.
