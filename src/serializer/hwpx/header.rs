@@ -981,6 +981,77 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "pending HWPX paraPr switch branch preservation design"]
+    fn write_header_preserves_para_pr_switch_branch_structure() {
+        let header_xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
+  xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"
+  xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hh:refList>
+    <hh:paraProperties itemCnt="1">
+      <hh:paraPr id="0" tabPrIDRef="0" condense="0" fontLineHeight="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:margin>
+          <hc:intent value="0" unit="HWPUNIT"/>
+          <hc:left value="0" unit="HWPUNIT"/>
+          <hc:right value="0" unit="HWPUNIT"/>
+          <hc:prev value="0" unit="HWPUNIT"/>
+          <hc:next value="0" unit="HWPUNIT"/>
+        </hh:margin>
+        <hp:switch>
+          <hp:case required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar">
+            <hh:margin>
+              <hc:intent value="0" unit="HWPUNIT"/>
+              <hc:left value="120" unit="HWPUNIT"/>
+              <hc:right value="120" unit="HWPUNIT"/>
+              <hc:prev value="0" unit="HWPUNIT"/>
+              <hc:next value="0" unit="HWPUNIT"/>
+            </hh:margin>
+          </hp:case>
+          <hp:default>
+            <hh:margin>
+              <hc:intent value="0" unit="HWPUNIT"/>
+              <hc:left value="240" unit="HWPUNIT"/>
+              <hc:right value="240" unit="HWPUNIT"/>
+              <hc:prev value="0" unit="HWPUNIT"/>
+              <hc:next value="0" unit="HWPUNIT"/>
+            </hh:margin>
+          </hp:default>
+        </hp:switch>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, doc_properties) = crate::parser::hwpx::header::parse_hwpx_header(header_xml)
+            .expect("parse header switch");
+        let doc = Document {
+            doc_info,
+            doc_properties,
+            ..Document::default()
+        };
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+
+        assert_eq!(xml.matches("<hh:paraPr ").count(), 1);
+        assert_eq!(
+            xml.matches("<hp:switch").count(),
+            1,
+            "paraPr switch branch must survive header roundtrip: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<hp:case").count(),
+            1,
+            "paraPr switch case must survive header roundtrip: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<hp:default").count(),
+            1,
+            "paraPr switch default must survive header roundtrip: {xml}"
+        );
+    }
+
+    #[test]
     fn canonical_attr_order_charpr() {
         let bytes = include_bytes!("../../../samples/hwpx/ref/ref_empty.hwpx");
         let doc = parse_hwpx(bytes).expect("parse");
