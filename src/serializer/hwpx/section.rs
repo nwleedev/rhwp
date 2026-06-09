@@ -52,6 +52,7 @@ const PARA_CLOSE: &str = "</hp:p></hs:sec>";
 const TEMPLATE_FIRST_P_TAG: &str = r#"<hp:p id="3121190098" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">"#;
 // 템플릿 내 본문 텍스트용 run. 앞의 secPr/colPr run과 구분되는 두 번째 run이다.
 const TEMPLATE_TEXT_RUN: &str = r#"<hp:run charPrIDRef="0"><hp:t/></hp:run>"#;
+const TEMPLATE_SECTION_RUN_OPEN: &str = r#"<hp:run charPrIDRef="0"><hp:secPr"#;
 
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
@@ -71,7 +72,7 @@ pub fn write_section(
 
     let first_para = section.paragraphs.first();
     let (first_body, first_linesegs, first_advance) = match first_para {
-        Some(p) => render_paragraph_xml_parts(p, vert_cursor, ctx),
+        Some(p) => render_first_paragraph_xml_parts(p, vert_cursor, ctx),
         None => {
             let (text, linesegs, advance) = render_paragraph_parts_for_text("", vert_cursor);
             (
@@ -87,6 +88,9 @@ pub fn write_section(
     out = replace_first_linesegs(&out, &first_linesegs);
     out = replace_page_pr(&out, &section.section_def.page_def);
     out = replace_page_border_fills(&out, &section.section_def);
+    if let Some(first_char_shape_id) = first_para.and_then(first_section_run_char_shape_id) {
+        out = replace_first_section_run_char_shape(&out, first_char_shape_id);
+    }
 
     // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
     if let Some(p) = first_para {
@@ -110,6 +114,93 @@ pub fn write_section(
     }
 
     Ok(out.into_bytes())
+}
+
+fn render_first_paragraph_xml_parts(
+    para: &Paragraph,
+    vert_start: u32,
+    ctx: &mut SerializeContext,
+) -> (String, String, u32) {
+    let body_para = first_paragraph_body_without_template_section_prefix(para);
+    let render_para = body_para.as_ref().unwrap_or(para);
+    let runs_xml = render_paragraph_runs(render_para, ctx);
+
+    if !para.line_segs.is_empty() {
+        let linesegs = render_lineseg_array_from_ir(&para.line_segs);
+        let vert_end = next_vert_cursor_from_ir(&para.line_segs, vert_start);
+        (runs_xml, linesegs, vert_end)
+    } else {
+        let (linesegs, vert_end) = render_lineseg_array_fallback(&para.text, vert_start);
+        (runs_xml, linesegs, vert_end)
+    }
+}
+
+fn first_paragraph_body_without_template_section_prefix(para: &Paragraph) -> Option<Paragraph> {
+    let prefix_count = first_section_prefix_control_count(para)?;
+    let prefix_units = prefix_count as u32 * 8;
+    if !para
+        .hwpx_run_spans
+        .first()
+        .is_some_and(|span| span.start_pos == 0 && span.end_pos == prefix_units)
+    {
+        return None;
+    }
+
+    let mut filtered = para.clone();
+    filtered.controls.drain(0..prefix_count);
+    if filtered.ctrl_data_records.len() >= prefix_count {
+        filtered.ctrl_data_records.drain(0..prefix_count);
+    }
+    filtered.char_count = filtered.char_count.saturating_sub(prefix_units);
+    filtered.char_offsets = filtered
+        .char_offsets
+        .iter()
+        .map(|offset| offset.saturating_sub(prefix_units))
+        .collect();
+    for char_shape in &mut filtered.char_shapes {
+        char_shape.start_pos = char_shape.start_pos.saturating_sub(prefix_units);
+    }
+    filtered.hwpx_run_spans = filtered
+        .hwpx_run_spans
+        .into_iter()
+        .skip(1)
+        .map(|mut span| {
+            span.start_pos = span.start_pos.saturating_sub(prefix_units);
+            span.end_pos = span.end_pos.saturating_sub(prefix_units);
+            span
+        })
+        .collect();
+    for field_range in &mut filtered.field_ranges {
+        field_range.control_idx = field_range.control_idx.saturating_sub(prefix_count);
+    }
+
+    Some(filtered)
+}
+
+fn first_section_prefix_control_count(para: &Paragraph) -> Option<usize> {
+    if !matches!(para.controls.first(), Some(Control::SectionDef(_))) {
+        return None;
+    }
+
+    let mut count = 1usize;
+    if matches!(para.controls.get(1), Some(Control::ColumnDef(_))) {
+        count += 1;
+    }
+
+    Some(count)
+}
+
+fn first_section_run_char_shape_id(para: &Paragraph) -> Option<u32> {
+    first_section_prefix_control_count(para)?;
+    para.hwpx_run_spans.first().map(|span| span.char_shape_id)
+}
+
+fn replace_first_section_run_char_shape(xml: &str, char_shape_id: u32) -> String {
+    xml.replacen(
+        TEMPLATE_SECTION_RUN_OPEN,
+        &format!(r#"<hp:run charPrIDRef="{char_shape_id}"><hp:secPr"#),
+        1,
+    )
 }
 
 /// IR의 Paragraph를 기반으로 `<hp:p>` 시작 태그를 생성.
@@ -2145,6 +2236,47 @@ mod tests {
         assert!(
             first < bookmark,
             "run order should remain text then bookmark run: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn first_paragraph_preserves_runs_after_template_section_prefix() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:secPr textDirection="HORIZONTAL"><hp:pagePr landscape="WIDELY" width="59528" height="84186"><hp:margin left="0" right="0" top="0" bottom="0" header="0" footer="0" gutter="0"/></hp:pagePr><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:secPr></hp:run>
+  <hp:run charPrIDRef="8"><hp:ctrl><hp:pageNum pos="TOP_LEFT" formatType="DIGIT" sideChar="NONE"/></hp:ctrl></hp:run>
+  <hp:run charPrIDRef="9"><hp:t>A</hp:t></hp:run>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.hwpx_run_spans.len(), 3);
+        assert!(matches!(
+            para.controls.first(),
+            Some(Control::SectionDef(_))
+        ));
+        assert!(matches!(para.controls.get(1), Some(Control::ColumnDef(_))));
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let section_run = xml
+            .find(r#"<hp:run charPrIDRef="7"><hp:secPr "#)
+            .unwrap_or_else(|| panic!("section prefix should keep source charPr: {}", xml));
+        let page_num = xml
+            .find(r#"<hp:run charPrIDRef="8"><hp:ctrl><hp:pageNum "#)
+            .unwrap_or_else(|| panic!("page number run should remain after section run: {}", xml));
+        let text = xml
+            .find(r#"<hp:run charPrIDRef="9"><hp:t>A</hp:t></hp:run>"#)
+            .unwrap_or_else(|| panic!("text run should remain after page number run: {}", xml));
+        assert!(
+            section_run < page_num && page_num < text,
+            "first paragraph run order should remain section, page number, text: {}",
             xml
         );
     }
