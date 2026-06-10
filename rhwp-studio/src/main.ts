@@ -1239,6 +1239,25 @@ window.addEventListener('message', async (e) => {
         await initPromise;
         reply(JSON.parse(wasm.exportHwpVerify()));
         break;
+      case 'getFieldList':
+        await initPromise;
+        reply(wasm.getFieldList());
+        break;
+      case 'setFieldValueByName': {
+        await initPromise;
+        const name = String(params?.name ?? '');
+        const value = String(params?.value ?? '');
+        if (!name) {
+          reply(undefined, 'Field name is required.');
+          break;
+        }
+        const result = wasm.setFieldValueByName(name, value);
+        if (result.ok === true) {
+          inputHandler?.commitExternalDirectMutation('field_value_replace', 'wasm_set_field_value_by_name');
+        }
+        reply(result);
+        break;
+      }
       case 'getCaptureCoverageObservations':
         await initPromise;
         reply({ observations: inputHandler?.getCaptureCoverageObservations(params ?? {}) ?? [] });

@@ -1801,6 +1801,14 @@ export class InputHandler {
     this.captureCoverage.recordDirectMutation({ category, sourceHook });
   }
 
+  commitExternalDirectMutation(
+    category: CaptureCoverageOperationCategory,
+    sourceHook: string,
+  ): void {
+    this.recordCaptureCoverageDirectMutation(category, sourceHook);
+    this.afterEdit();
+  }
+
   /** Backspace 처리 */
   private handleBackspace(pos: DocumentPosition, inCell: boolean): void {
     _text.handleBackspace.call(this, pos, inCell);
