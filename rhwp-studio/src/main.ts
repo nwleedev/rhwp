@@ -3,6 +3,7 @@ import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
+import { InsertTextCommand } from '@/engine/command';
 import { Toolbar } from '@/ui/toolbar';
 import { MenuBar } from '@/ui/menu-bar';
 import { loadWebFonts } from '@/core/font-loader';
@@ -273,19 +274,38 @@ function applyDeterministicEdit(params?: DeterministicEditParams): Record<string
   if (!wasm.hasLoadedDocument()) {
     throw new Error('문서가 로드되지 않았습니다');
   }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
 
   const sectionCount = wasm.getSectionCount();
   const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
-  const paragraphIndex = boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
-  const paragraphLength = params?.charOffset == null ? null : wasm.getParagraphLength(sectionIndex, paragraphIndex);
-  const charOffset = paragraphLength == null
-    ? 0
-    : boundedInteger(params?.charOffset, 0, 0, paragraphLength);
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const charOffset = params?.charOffset == null
+    ? currentPosition.charOffset
+    : boundedInteger(params?.charOffset, 0, 0, Number.MAX_SAFE_INTEGER);
   const text = deterministicEditText(params);
-  const rawResult = wasm.insertText(sectionIndex, paragraphIndex, charOffset, text);
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+  };
 
-  eventBus.emit('document-mutated', 'deterministic-edit-rpc');
-  eventBus.emit('document-changed', 'deterministic-edit-rpc');
+  inputHandler.executeOperation({
+    kind: 'command',
+    command: new InsertTextCommand(position, text),
+    meta: {
+      actionId: 'deterministic-edit-rpc',
+      domain: 'text',
+      refresh: 'full',
+      dirtyScope: 'document',
+      selection: 'moveToResult',
+    },
+  });
 
   return {
     changed: true,
@@ -298,7 +318,6 @@ function applyDeterministicEdit(params?: DeterministicEditParams): Record<string
       paragraphIndex,
       charOffset,
     },
-    result: rawResult,
   };
 }
 
