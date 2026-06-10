@@ -87,8 +87,8 @@ pub fn write_section(
     };
     vert_cursor = first_advance;
 
-    let mut out = EMPTY_SECTION_XML.replacen(TEMPLATE_TEXT_RUN, &first_body, 1);
-    out = replace_first_linesegs(&out, &first_linesegs);
+    let mut out = replace_first_linesegs(EMPTY_SECTION_XML, &first_linesegs);
+    out = out.replacen(TEMPLATE_TEXT_RUN, &first_body, 1);
     out = replace_page_pr(&out, &section.section_def.page_def);
     out = replace_start_num(&out, &section.section_def);
     out = replace_page_border_fills(&out, &section.section_def);
@@ -631,12 +631,14 @@ fn render_hwpx_run_span_content(
                     continue;
                 }
             }
-            if is_hwpx_zero_width_span_slot(slots, *slot_idx, char_pos) {
+            while is_hwpx_zero_width_span_slot(slots, *slot_idx, char_pos) {
                 let slot = &slots[*slot_idx];
                 if slot.pos >= start_pos && slot.pos < end_pos {
                     flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
                     render_hwpx_run_slot(&mut out, &slot.kind, ctx);
                     *slot_idx += 1;
+                } else {
+                    break;
                 }
             }
         }
@@ -680,9 +682,14 @@ fn render_hwpx_run_span_content(
                 break;
             }
         }
-        while *slot_idx < slots.len() && slots[*slot_idx].pos < end_pos {
+        while *slot_idx < slots.len() {
             let slot = &slots[*slot_idx];
             let slot_pos = slot.pos;
+            let is_markpen_at_end = slot_pos == end_pos
+                && matches!(slot.kind, HwpxRunSlotKind::Control(Control::Markpen(_)));
+            if slot_pos >= end_pos && !is_markpen_at_end {
+                break;
+            }
             if slot_pos >= start_pos {
                 flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
                 render_hwpx_run_slot(&mut out, &slot.kind, ctx);
@@ -1943,6 +1950,58 @@ mod tests {
     }
 
     #[test]
+    fn first_paragraph_lineseg_replacement_ignores_nested_header_linesegs() {
+        let mut nested = Paragraph::default();
+        nested.text = "nested".to_string();
+        nested.line_segs.push(LineSeg {
+            text_start: 0,
+            vertical_pos: 0,
+            line_height: 2222,
+            text_height: 2222,
+            baseline_distance: 1111,
+            line_spacing: 333,
+            column_start: 0,
+            segment_width: 12345,
+            tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+        });
+
+        let mut para = Paragraph::default();
+        para.controls.push(Control::Header(Box::new(Header {
+            paragraphs: vec![nested],
+            text_width: 46800,
+            text_height: 3660,
+            ..Header::default()
+        })));
+        para.line_segs.push(LineSeg {
+            text_start: 0,
+            vertical_pos: 0,
+            line_height: 1729,
+            text_height: 1729,
+            baseline_distance: 1288,
+            line_spacing: 0,
+            column_start: 0,
+            segment_width: 46800,
+            tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
+        });
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        assert!(
+            xml.contains(r#"vertsize="2222" textheight="2222" baseline="1111" spacing="333" horzpos="0" horzsize="12345""#),
+            "nested header lineseg should survive as nested metadata: {}",
+            xml
+        );
+        assert!(
+            xml.contains(r#"</hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1729" textheight="1729" baseline="1288" spacing="0" horzpos="0" horzsize="46800" flags="393216"/></hp:linesegarray>"#),
+            "top-level first paragraph lineseg should be replaced at the template slot, not inside the nested header: {}",
+            xml
+        );
+    }
+
+    #[test]
     fn hp_p_attrs_reflect_para_shape_id_and_style_id() {
         let mut para = Paragraph::default();
         para.para_shape_id = 7;
@@ -2379,6 +2438,69 @@ mod tests {
         assert!(
             xml.contains(expected),
             "markpen boundaries should be preserved inside the original run: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_adjacent_markpen_boundaries_at_same_position() {
+        let source = r##"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A<hp:markpenBegin color="#FFFF00"/><hp:markpenEnd/>B</hp:t></hp:run>
+</hp:p>
+</hs:sec>"##;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert_eq!(para.hwpx_zero_width_control_slots.len(), 2);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].pos, 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[1].pos, 1);
+        assert!(
+            can_render_hwpx_run_spans(para),
+            "adjacent markpen boundaries should keep the preserved HWPX run span path"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let expected = r##"<hp:run charPrIDRef="7"><hp:t>A</hp:t><hp:markpenBegin color="#FFFF00"/><hp:markpenEnd/><hp:t>B</hp:t></hp:run>"##;
+        assert!(
+            xml.contains(expected),
+            "adjacent markpen boundaries at the same position should both be preserved: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_markpen_end_at_run_end_boundary() {
+        let source = r##"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A<hp:markpenBegin color="#FFFF00"/>B<hp:markpenEnd/></hp:t></hp:run>
+</hp:p>
+</hs:sec>"##;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert_eq!(para.hwpx_run_spans[0].end_pos, 2);
+        assert_eq!(para.hwpx_zero_width_control_slots.len(), 2);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].pos, 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[1].pos, 2);
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let expected = r##"<hp:run charPrIDRef="7"><hp:t>A</hp:t><hp:markpenBegin color="#FFFF00"/><hp:t>B</hp:t><hp:markpenEnd/></hp:run>"##;
+        assert!(
+            xml.contains(expected),
+            "markpen end at run end should be preserved before the run closes: {}",
             xml
         );
     }
