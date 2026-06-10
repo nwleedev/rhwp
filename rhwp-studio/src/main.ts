@@ -900,6 +900,7 @@ async function loadBytes(
   fileHandle: typeof wasm.currentFileHandle,
   startTime = performance.now(),
 ): Promise<void> {
+  inputHandler?.resetCaptureCoverage();
   const docInfo = wasm.loadDocument(data, fileName);
   wasm.currentFileHandle = fileHandle;
   const elapsed = performance.now() - startTime;
@@ -1237,6 +1238,10 @@ window.addEventListener('message', async (e) => {
       case 'exportHwpVerify':
         await initPromise;
         reply(JSON.parse(wasm.exportHwpVerify()));
+        break;
+      case 'getCaptureCoverageObservations':
+        await initPromise;
+        reply({ observations: inputHandler?.getCaptureCoverageObservations(params ?? {}) ?? [] });
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);

@@ -24,6 +24,8 @@ import * as _keyboard from './input-handler-keyboard';
 import * as _text from './input-handler-text';
 import * as _picture from './input-handler-picture';
 import { isPageLocalTextEditCommand } from './input-edit-invalidation';
+import { CaptureCoverageCollector } from './capture-coverage';
+import type { CaptureCoverageObservation, CaptureCoverageRequest } from './capture-coverage';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -87,6 +89,7 @@ export class InputHandler {
   private fieldMarker: FieldMarkerRenderer;
   private selectionRenderer: SelectionRenderer;
   private history: CommandHistory;
+  private captureCoverage = new CaptureCoverageCollector();
   private textarea: HTMLTextAreaElement;
   private active = false;
   private insertMode = true;  // true=삽입, false=수정(덮어쓰기)
@@ -1776,6 +1779,15 @@ export class InputHandler {
         break;
       }
     }
+    this.captureCoverage.recordOperation(desc);
+  }
+
+  resetCaptureCoverage(): void {
+    this.captureCoverage.reset();
+  }
+
+  getCaptureCoverageObservations(request: CaptureCoverageRequest = {}): CaptureCoverageObservation[] {
+    return this.captureCoverage.getObservations(request);
   }
 
   /** Backspace 처리 */
