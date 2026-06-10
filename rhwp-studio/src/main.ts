@@ -3,7 +3,7 @@ import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
-import { InsertTextCommand } from '@/engine/command';
+import { DeleteTextCommand, InsertTextCommand } from '@/engine/command';
 import { Toolbar } from '@/ui/toolbar';
 import { MenuBar } from '@/ui/menu-bar';
 import { loadWebFonts } from '@/core/font-loader';
@@ -68,6 +68,28 @@ type DeterministicEditParams = {
   sectionIndex?: unknown;
   paragraphIndex?: unknown;
   charOffset?: unknown;
+};
+
+type TableCellTextTarget = {
+  cellIndex: number;
+  cellParaIndex: number;
+  charLength: number;
+  col?: number;
+  controlIndex: number;
+  pageIndex: number;
+  parentParaIndex: number;
+  row?: number;
+  sectionIndex: number;
+  value: string;
+};
+
+type TableCellTextParams = {
+  cellIndex?: unknown;
+  cellParaIndex?: unknown;
+  controlIndex?: unknown;
+  parentParaIndex?: unknown;
+  sectionIndex?: unknown;
+  text?: unknown;
 };
 
 function errorMessage(error: unknown): string {
@@ -317,6 +339,158 @@ function applyDeterministicEdit(params?: DeterministicEditParams): Record<string
       sectionIndex,
       paragraphIndex,
       charOffset,
+    },
+  };
+}
+
+function tableCellText(params?: TableCellTextParams): string {
+  const text = typeof params?.text === 'string' ? params.text : 'table-cell-proof';
+  if (text.length === 0) {
+    throw new Error('table cell replacement text is empty');
+  }
+  if (text.length > 128) {
+    throw new Error('table cell replacement text is too long');
+  }
+  return text;
+}
+
+function finiteIndex(value: unknown, name: string): number {
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return numeric;
+}
+
+function getTableCellTextTargets(): TableCellTextTarget[] {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  const targets: TableCellTextTarget[] = [];
+  const seen = new Set<string>();
+
+  for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+    const layout = wasm.getPageControlLayout(pageIndex);
+    const controls = Array.isArray(layout.controls)
+      ? layout.controls as unknown as Array<Record<string, unknown>>
+      : [];
+    for (const control of controls) {
+      if (control.type !== 'table') continue;
+
+      const sectionIndex = Number(control.secIdx);
+      const parentParaIndex = Number(control.paraIdx);
+      const controlIndex = Number(control.controlIdx);
+      if (![sectionIndex, parentParaIndex, controlIndex].every(Number.isInteger)) continue;
+
+      const cells = Array.isArray(control.cells) ? control.cells as Array<Record<string, unknown>> : [];
+      for (const cell of cells) {
+        const cellIndex = Number(cell.cellIdx);
+        if (!Number.isInteger(cellIndex)) continue;
+
+        const cellParaIndex = 0;
+        const key = `${sectionIndex}:${parentParaIndex}:${controlIndex}:${cellIndex}:${cellParaIndex}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        let paragraphCount = 0;
+        let charLength = 0;
+        let value = '';
+        try {
+          paragraphCount = wasm.getCellParagraphCount(sectionIndex, parentParaIndex, controlIndex, cellIndex);
+          if (paragraphCount <= 0) continue;
+          charLength = wasm.getCellParagraphLength(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex);
+          value = charLength > 0
+            ? wasm.getTextInCell(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex, 0, charLength)
+            : '';
+        } catch {
+          continue;
+        }
+
+        targets.push({
+          cellIndex,
+          cellParaIndex,
+          charLength,
+          col: Number.isInteger(Number(cell.col)) ? Number(cell.col) : undefined,
+          controlIndex,
+          pageIndex,
+          parentParaIndex,
+          row: Number.isInteger(Number(cell.row)) ? Number(cell.row) : undefined,
+          sectionIndex,
+          value,
+        });
+      }
+    }
+  }
+
+  return targets;
+}
+
+function setTableCellText(params?: TableCellTextParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  const sectionIndex = finiteIndex(params?.sectionIndex, 'sectionIndex');
+  const parentParaIndex = finiteIndex(params?.parentParaIndex, 'parentParaIndex');
+  const controlIndex = finiteIndex(params?.controlIndex, 'controlIndex');
+  const cellIndex = finiteIndex(params?.cellIndex, 'cellIndex');
+  const cellParaIndex = params?.cellParaIndex == null ? 0 : finiteIndex(params.cellParaIndex, 'cellParaIndex');
+  const text = tableCellText(params);
+  const oldLength = wasm.getCellParagraphLength(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex);
+  const oldValue = oldLength > 0
+    ? wasm.getTextInCell(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex, 0, oldLength)
+    : '';
+  const position = {
+    sectionIndex,
+    paragraphIndex: parentParaIndex,
+    charOffset: 0,
+    parentParaIndex,
+    controlIndex,
+    cellIndex,
+    cellParaIndex,
+  };
+
+  if (oldLength > 0) {
+    inputHandler.executeOperation({
+      kind: 'command',
+      command: new DeleteTextCommand(position, oldLength, 'forward'),
+      meta: {
+        actionId: 'table-cell-text-rpc-delete',
+        domain: 'table',
+        refresh: 'full',
+        dirtyScope: 'table',
+        selection: 'moveToResult',
+      },
+    });
+  }
+
+  inputHandler.executeOperation({
+    kind: 'command',
+    command: new InsertTextCommand(position, text),
+    meta: {
+      actionId: 'table-cell-text-rpc-insert',
+      domain: 'table',
+      refresh: 'full',
+      dirtyScope: 'table',
+      selection: 'moveToResult',
+    },
+  });
+
+  return {
+    ok: true,
+    oldLength,
+    oldValue,
+    newValue: text,
+    target: {
+      sectionIndex,
+      parentParaIndex,
+      controlIndex,
+      cellIndex,
+      cellParaIndex,
     },
   };
 }
@@ -1273,6 +1447,14 @@ window.addEventListener('message', async (e) => {
         reply(result);
         break;
       }
+      case 'getTableCellTextTargets':
+        await initPromise;
+        reply(getTableCellTextTargets());
+        break;
+      case 'setTableCellText':
+        await initPromise;
+        reply(setTableCellText(params));
+        break;
       case 'getCaptureCoverageObservations':
         await initPromise;
         reply({ observations: inputHandler?.getCaptureCoverageObservations(params ?? {}) ?? [] });
