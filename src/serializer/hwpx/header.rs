@@ -740,17 +740,32 @@ fn write_para_pr<W: Write>(
     id: u16,
     ps: &ParaShape,
 ) -> Result<(), SerializeError> {
+    let id_str = id.to_string();
+    let tab_pr_id_ref = ps.tab_def_id.to_string();
+    let condense = (((ps.attr1 >> 9) & 0x7f).min(75)).to_string();
+    let font_line_height = bool_attr(ps.attr1 & (1 << 22) != 0);
+    let snap_to_grid = bool_attr(ps.attr1 & (1 << 8) != 0);
+    let break_non_latin_word = if ps.attr1 & (1 << 7) != 0 {
+        "KEEP_WORD"
+    } else {
+        "BREAK_WORD"
+    };
+    let widow_orphan = bool_attr((ps.attr1 & (1 << 16) != 0) || (ps.attr2 & (1 << 5) != 0));
+    let keep_with_next = bool_attr((ps.attr1 & (1 << 17) != 0) || (ps.attr2 & (1 << 6) != 0));
+    let keep_lines = bool_attr((ps.attr1 & (1 << 18) != 0) || (ps.attr2 & (1 << 7) != 0));
+    let page_break_before = bool_attr((ps.attr1 & (1 << 19) != 0) || (ps.attr2 & (1 << 8) != 0));
+
     // 속성 순서 (ParaShapeType.cpp:62-68): id, tabPrIDRef, condense,
     // fontLineHeight, snapToGrid, suppressLineNumbers, checked
     start_tag_attrs(
         w,
         "hh:paraPr",
         &[
-            ("id", &id.to_string()),
-            ("tabPrIDRef", &ps.tab_def_id.to_string()),
-            ("condense", "0"),
-            ("fontLineHeight", "0"),
-            ("snapToGrid", "1"),
+            ("id", &id_str),
+            ("tabPrIDRef", &tab_pr_id_ref),
+            ("condense", &condense),
+            ("fontLineHeight", font_line_height),
+            ("snapToGrid", snap_to_grid),
             ("suppressLineNumbers", "0"),
             ("checked", "0"),
         ],
@@ -780,11 +795,11 @@ fn write_para_pr<W: Write>(
         "hh:breakSetting",
         &[
             ("breakLatinWord", "KEEP_WORD"),
-            ("breakNonLatinWord", "KEEP_WORD"),
-            ("widowOrphan", "0"),
-            ("keepWithNext", "0"),
-            ("keepLines", "0"),
-            ("pageBreakBefore", "0"),
+            ("breakNonLatinWord", break_non_latin_word),
+            ("widowOrphan", widow_orphan),
+            ("keepWithNext", keep_with_next),
+            ("keepLines", keep_lines),
+            ("pageBreakBefore", page_break_before),
             ("lineWrap", "BREAK"),
         ],
     )?;
@@ -836,6 +851,14 @@ fn write_para_pr<W: Write>(
 
     end_tag(w, "hh:paraPr")?;
     Ok(())
+}
+
+fn bool_attr(value: bool) -> &'static str {
+    if value {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 fn write_preserved_hwpx_switch<W: Write>(
@@ -982,6 +1005,60 @@ mod tests {
         let xml = std::str::from_utf8(&bytes).unwrap();
         assert!(xml.contains("<hh:head"));
         assert!(xml.contains("</hh:head>"));
+    }
+
+    #[test]
+    fn write_para_pr_preserves_clear_layout_bits() {
+        let ps = ParaShape {
+            attr1: 0,
+            attr2: 0,
+            ..ParaShape::default()
+        };
+        let mut writer = Writer::new(Vec::new());
+
+        write_para_pr(&mut writer, 0, &ps).expect("write paraPr");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+
+        assert!(
+            xml.contains(r#"condense="0" fontLineHeight="0" snapToGrid="0""#),
+            "paraPr attributes must follow ParaShape attr1 bits: {xml}"
+        );
+        assert!(
+            xml.contains(r#"breakNonLatinWord="BREAK_WORD""#),
+            "non-Latin break unit must follow ParaShape attr1 bit 7: {xml}"
+        );
+        assert!(
+            xml.contains(r#"widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0""#),
+            "break flags must follow ParaShape attr bits: {xml}"
+        );
+    }
+
+    #[test]
+    fn write_para_pr_preserves_set_layout_bits() {
+        let ps = ParaShape {
+            attr1: (30 << 9) | (1 << 22) | (1 << 8) | (1 << 7) | (1 << 16),
+            attr2: (1 << 6) | (1 << 7) | (1 << 8),
+            ..ParaShape::default()
+        };
+        let mut writer = Writer::new(Vec::new());
+
+        write_para_pr(&mut writer, 3, &ps).expect("write paraPr");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+
+        assert!(
+            xml.contains(
+                r#"id="3" tabPrIDRef="0" condense="30" fontLineHeight="1" snapToGrid="1""#
+            ),
+            "paraPr scalar attributes must follow ParaShape attr1 bits: {xml}"
+        );
+        assert!(
+            xml.contains(r#"breakNonLatinWord="KEEP_WORD""#),
+            "non-Latin break unit must follow ParaShape attr1 bit 7: {xml}"
+        );
+        assert!(
+            xml.contains(r#"widowOrphan="1" keepWithNext="1" keepLines="1" pageBreakBefore="1""#),
+            "break flags must follow ParaShape attr1/attr2 bits: {xml}"
+        );
     }
 
     #[test]
