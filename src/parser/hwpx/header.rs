@@ -2100,26 +2100,40 @@ fn parse_diagonal_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
 
 fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
     let s = attr_str(attr);
-    // "0.12 mm", "0.4 mm" 등의 형식에서 두께 인덱스 추출
     let mm: f64 = s
         .split_whitespace()
         .next()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.12);
-    // 대략적인 HWP 두께 인덱스 매핑
-    if mm <= 0.12 {
-        0
-    } else if mm <= 0.3 {
-        1
-    } else if mm <= 0.5 {
-        2
-    } else if mm <= 1.0 {
-        3
-    } else if mm <= 1.5 {
-        4
-    } else {
-        5
-    }
+    const WIDTHS: [(f64, u8); 16] = [
+        (0.1, 0),
+        (0.12, 1),
+        (0.15, 2),
+        (0.2, 3),
+        (0.25, 4),
+        (0.3, 5),
+        (0.4, 6),
+        (0.5, 7),
+        (0.6, 8),
+        (0.7, 9),
+        (1.0, 10),
+        (1.5, 11),
+        (2.0, 12),
+        (3.0, 13),
+        (4.0, 14),
+        (5.0, 15),
+    ];
+
+    WIDTHS
+        .iter()
+        .min_by(|(left, _), (right, _)| {
+            (mm - *left)
+                .abs()
+                .partial_cmp(&(mm - *right).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(_, index)| *index)
+        .unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -2587,5 +2601,54 @@ mod tests {
         );
         assert_eq!((bf.attr >> 2) & 0x07, 0, "slash 방향 비트 없음");
         assert_eq!(bf.diagonal.diagonal_type, 1, "diagonal SOLID → 선 종류 1");
+    }
+
+    #[test]
+    fn test_border_width_parser_matches_serializer_index_table() {
+        let cases = [
+            ("0.1 mm", 0),
+            ("0.12 mm", 1),
+            ("0.15 mm", 2),
+            ("0.2 mm", 3),
+            ("0.25 mm", 4),
+            ("0.3 mm", 5),
+            ("0.4 mm", 6),
+            ("0.5 mm", 7),
+            ("0.6 mm", 8),
+            ("0.7 mm", 9),
+            ("1.0 mm", 10),
+            ("1.5 mm", 11),
+            ("2.0 mm", 12),
+            ("3.0 mm", 13),
+            ("4.0 mm", 14),
+            ("5.0 mm", 15),
+        ];
+
+        for (width, expected) in cases {
+            let bf = parse_single_border_fill(&format!(
+                r##"<hh:borderFill id="1">
+                     <hh:leftBorder type="SOLID" width="{width}" color="#000000"/>
+                     <hh:rightBorder type="SOLID" width="{width}" color="#000000"/>
+                     <hh:topBorder type="SOLID" width="{width}" color="#000000"/>
+                     <hh:bottomBorder type="SOLID" width="{width}" color="#000000"/>
+                   </hh:borderFill>"##
+            ));
+            assert_eq!(
+                bf.borders[0].width, expected,
+                "left border width index for {width}"
+            );
+            assert_eq!(
+                bf.borders[1].width, expected,
+                "right border width index for {width}"
+            );
+            assert_eq!(
+                bf.borders[2].width, expected,
+                "top border width index for {width}"
+            );
+            assert_eq!(
+                bf.borders[3].width, expected,
+                "bottom border width index for {width}"
+            );
+        }
     }
 }

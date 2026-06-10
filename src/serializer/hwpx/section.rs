@@ -54,6 +54,8 @@ const TEMPLATE_FIRST_P_TAG: &str = r#"<hp:p id="3121190098" paraPrIDRef="0" styl
 // 템플릿 내 본문 텍스트용 run. 앞의 secPr/colPr run과 구분되는 두 번째 run이다.
 const TEMPLATE_TEXT_RUN: &str = r#"<hp:run charPrIDRef="0"><hp:t/></hp:run>"#;
 const TEMPLATE_SECTION_RUN_OPEN: &str = r#"<hp:run charPrIDRef="0"><hp:secPr"#;
+const TEMPLATE_START_NUM: &str =
+    r#"<hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/>"#;
 
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
@@ -88,6 +90,7 @@ pub fn write_section(
     let mut out = EMPTY_SECTION_XML.replacen(TEMPLATE_TEXT_RUN, &first_body, 1);
     out = replace_first_linesegs(&out, &first_linesegs);
     out = replace_page_pr(&out, &section.section_def.page_def);
+    out = replace_start_num(&out, &section.section_def);
     out = replace_page_border_fills(&out, &section.section_def);
     if let Some(first_char_shape_id) = first_para.and_then(first_section_run_char_shape_id) {
         out = replace_first_section_run_char_shape(&out, first_char_shape_id);
@@ -201,6 +204,20 @@ fn replace_first_section_run_char_shape(xml: &str, char_shape_id: u32) -> String
         TEMPLATE_SECTION_RUN_OPEN,
         &format!(r#"<hp:run charPrIDRef="{char_shape_id}"><hp:secPr"#),
         1,
+    )
+}
+
+fn replace_start_num(xml: &str, section_def: &crate::model::document::SectionDef) -> String {
+    xml.replacen(TEMPLATE_START_NUM, &render_start_num(section_def), 1)
+}
+
+fn render_start_num(section_def: &crate::model::document::SectionDef) -> String {
+    format!(
+        r#"<hp:startNum pageStartsOn="BOTH" page="{}" pic="{}" tbl="{}" equation="{}"/>"#,
+        section_def.page_num,
+        section_def.picture_num,
+        section_def.table_num,
+        section_def.equation_num,
     )
 }
 
@@ -2604,6 +2621,39 @@ mod tests {
             vec!["ODD", "EVEN", "BOTH"],
             "pageBorderFill type/apply order should survive roundtrip: {}",
             xml
+        );
+    }
+
+    #[test]
+    fn section_roundtrip_preserves_start_num() {
+        let source = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
+  <hp:run charPrIDRef="0">
+    <hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0">
+      <hp:pagePr landscape="NARROWLY" width="59528" height="84186" gutterType="LEFT_ONLY">
+        <hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/>
+      </hp:pagePr>
+      <hp:startNum page="7" pic="8" tbl="9" equation="10"/>
+    </hp:secPr>
+  </hp:run>
+  <hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray>
+</hp:p>
+</hs:sec>"#;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        let reparsed = crate::parser::hwpx::section::parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(reparsed.section_def.page_num, 7, "page start number");
+        assert_eq!(reparsed.section_def.picture_num, 8, "picture start number");
+        assert_eq!(reparsed.section_def.table_num, 9, "table start number");
+        assert_eq!(
+            reparsed.section_def.equation_num, 10,
+            "equation start number"
         );
     }
 
