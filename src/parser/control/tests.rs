@@ -535,6 +535,7 @@ fn dump_bookreview_section1_controls() {
                     Control::Bookmark(b) => {
                         eprintln!("    Ctrl[{}]: Bookmark(name={:?})", ci, b.name)
                     }
+                    Control::Markpen(_) => eprintln!("    Ctrl[{}]: Markpen", ci),
                     Control::Hyperlink(h) => {
                         eprintln!("    Ctrl[{}]: Hyperlink(url={:?})", ci, h.url)
                     }
@@ -645,6 +646,7 @@ fn dump_control_brief(ctrl: &Control, idx: usize, indent: usize) {
         Control::NewNumber(_) => eprintln!("{}Ctrl[{}]: NewNumber", pad, idx),
         Control::PageNumberPos(_) => eprintln!("{}Ctrl[{}]: PageNumberPos", pad, idx),
         Control::Bookmark(b) => eprintln!("{}Ctrl[{}]: Bookmark({:?})", pad, idx, b.name),
+        Control::Markpen(_) => eprintln!("{}Ctrl[{}]: Markpen", pad, idx),
         Control::Hyperlink(h) => eprintln!("{}Ctrl[{}]: Hyperlink({:?})", pad, idx, h.url),
         Control::Ruby(_) => eprintln!("{}Ctrl[{}]: Ruby", pad, idx),
         Control::CharOverlap(_) => eprintln!("{}Ctrl[{}]: CharOverlap", pad, idx),

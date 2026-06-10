@@ -22,8 +22,8 @@
 use quick_xml::Writer;
 
 use crate::model::control::{
-    AutoNumber, AutoNumberType, Bookmark, CharOverlap, Control, Equation, NewNumber, PageHide,
-    PageNumberPos,
+    AutoNumber, AutoNumberType, Bookmark, CharOverlap, Control, Equation, Markpen, NewNumber,
+    PageHide, PageNumberPos,
 };
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
@@ -406,7 +406,7 @@ fn hwpx_slots_with_positions(para: &Paragraph) -> Option<Vec<HwpxRunSlot<'_>>> {
     if !para.hwpx_zero_width_control_slots.iter().all(|slot| {
         matches!(
             para.controls.get(slot.control_idx),
-            Some(Control::Bookmark(_))
+            Some(Control::Bookmark(_) | Control::Markpen(_))
         )
     }) {
         return None;
@@ -668,7 +668,10 @@ fn render_hwpx_run_span_content(
         if start_pos == end_pos {
             while *slot_idx < slots.len() && slots[*slot_idx].pos == start_pos {
                 let slot = &slots[*slot_idx];
-                if matches!(slot.kind, HwpxRunSlotKind::Control(Control::Bookmark(_))) {
+                if matches!(
+                    slot.kind,
+                    HwpxRunSlotKind::Control(Control::Bookmark(_) | Control::Markpen(_))
+                ) {
                     flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, tab_idx);
                     render_hwpx_run_slot(&mut out, &slot.kind, ctx);
                     *slot_idx += 1;
@@ -710,7 +713,11 @@ fn is_hwpx_auto_number_span_char(
 
 fn is_hwpx_zero_width_span_slot(slots: &[HwpxRunSlot<'_>], slot_idx: usize, char_pos: u32) -> bool {
     slots.get(slot_idx).is_some_and(|slot| {
-        slot.pos == char_pos && matches!(slot.kind, HwpxRunSlotKind::Control(Control::Bookmark(_)))
+        slot.pos == char_pos
+            && matches!(
+                slot.kind,
+                HwpxRunSlotKind::Control(Control::Bookmark(_) | Control::Markpen(_))
+            )
     })
 }
 
@@ -1052,6 +1059,7 @@ fn is_hwpx_inline_slot(control: &Control) -> bool {
             | Control::Header(_)
             | Control::Footer(_)
             | Control::Bookmark(_)
+            | Control::Markpen(_)
             | Control::AutoNumber(_)
     )
 }
@@ -1107,6 +1115,7 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         }
         Control::CharOverlap(co) => out.push_str(&render_char_overlap(co, ctx)),
         Control::Bookmark(bm) => out.push_str(&render_bookmark(bm)),
+        Control::Markpen(markpen) => out.push_str(&render_markpen(markpen)),
         Control::PageHide(ph) => out.push_str(&render_page_hiding(ph)),
         Control::PageNumberPos(pn) => out.push_str(&render_page_num(pn)),
         Control::NewNumber(nn) => out.push_str(&render_new_num(nn)),
@@ -1171,6 +1180,15 @@ fn render_bookmark(bm: &Bookmark) -> String {
             out
         }
         Err(_) => String::new(),
+    }
+}
+
+fn render_markpen(markpen: &Markpen) -> String {
+    if markpen.begin {
+        let color = markpen.color.as_deref().unwrap_or("#FFFF00");
+        format!(r#"<hp:markpenBegin color="{}"/>"#, xml_escape(color))
+    } else {
+        "<hp:markpenEnd/>".to_string()
     }
 }
 
@@ -2321,6 +2339,46 @@ mod tests {
         assert!(
             first < bookmark,
             "run order should remain text then bookmark run: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn hp_run_preserves_markpen_range_boundaries() {
+        let source = r##"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+  <hp:run charPrIDRef="7"><hp:t>A<hp:markpenBegin color="#FFFF00"/>BC<hp:markpenEnd/>D</hp:t></hp:run>
+</hp:p>
+</hs:sec>"##;
+
+        let section = crate::parser::hwpx::section::parse_hwpx_section(source).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "ABCD");
+        assert_eq!(para.char_offsets, vec![0, 1, 2, 3]);
+        assert_eq!(para.controls.len(), 2);
+        assert!(matches!(para.controls[0], Control::Markpen(_)));
+        assert!(matches!(para.controls[1], Control::Markpen(_)));
+        assert_eq!(para.hwpx_run_spans.len(), 1);
+        assert_eq!(para.hwpx_zero_width_control_slots.len(), 2);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].control_idx, 0);
+        assert_eq!(para.hwpx_zero_width_control_slots[0].pos, 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[1].control_idx, 1);
+        assert_eq!(para.hwpx_zero_width_control_slots[1].pos, 3);
+        assert!(
+            can_render_hwpx_run_spans(para),
+            "markpen paragraph should use preserved HWPX run spans"
+        );
+
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        let expected = r##"<hp:run charPrIDRef="7"><hp:t>A</hp:t><hp:markpenBegin color="#FFFF00"/><hp:t>BC</hp:t><hp:markpenEnd/><hp:t>D</hp:t></hp:run>"##;
+        assert!(
+            xml.contains(expected),
+            "markpen boundaries should be preserved inside the original run: {}",
             xml
         );
     }

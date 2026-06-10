@@ -897,6 +897,7 @@ fn control_kind(control: &Control) -> &'static str {
         Control::NewNumber(_) => "NewNumber",
         Control::PageNumberPos(_) => "PageNumberPos",
         Control::Bookmark(_) => "Bookmark",
+        Control::Markpen(_) => "Markpen",
         Control::Hyperlink(_) => "Hyperlink",
         Control::Ruby(_) => "Ruby",
         Control::CharOverlap(_) => "CharOverlap",

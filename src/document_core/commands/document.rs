@@ -825,9 +825,12 @@ impl DocumentCore {
                     Control::AutoNumber(_) | Control::NewNumber(_) => 0x0012,
                     Control::PageNumberPos(_) | Control::PageHide(_) => 0x0015,
                     Control::Bookmark(_) => 0x0016,
+                    Control::Markpen(_) => 0,
                     Control::CharOverlap(_) => 0x0017,
                 };
-                mask |= 1u32 << bit;
+                if bit != 0 {
+                    mask |= 1u32 << bit;
+                }
             }
             if !para.field_ranges.is_empty() {
                 mask |= 1u32 << 0x0004;

@@ -302,6 +302,9 @@ fn serialize_paragraph_with_msb(
 fn compute_control_mask(para: &Paragraph) -> u32 {
     let mut mask: u32 = 0;
     for ctrl in &para.controls {
+        if !is_hwp5_body_text_control(ctrl) {
+            continue;
+        }
         let (char_code, _) = control_char_code_and_id(ctrl);
         mask |= 1u32 << char_code;
     }
@@ -450,6 +453,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     }
 
     for (i, ch) in text_chars.iter().enumerate() {
+        advance_to_hwp5_body_text_control(para, &mut ctrl_idx);
         let offset = if i < para.char_offsets.len() {
             para.char_offsets[i]
         } else {
@@ -483,6 +487,10 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
 
         // 갭에 컨트롤 문자 배치 (각 컨트롤 = 8 code unit)
         while prev_end + 8 <= offset && ctrl_idx < para.controls.len() {
+            advance_to_hwp5_body_text_control(para, &mut ctrl_idx);
+            if ctrl_idx >= para.controls.len() {
+                break;
+            }
             let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
             push_extended_ctrl(&mut code_units, ctrl_code, ctrl_id);
             ctrl_idx += 1;
@@ -545,6 +553,10 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     // 남은 컨트롤 배치 + trailing FIELD_END 인터리빙
     // FIELD_BEGIN 컨트롤 직후에 대응하는 FIELD_END를 삽입하여 올바른 순서를 보장한다.
     while ctrl_idx < para.controls.len() {
+        advance_to_hwp5_body_text_control(para, &mut ctrl_idx);
+        if ctrl_idx >= para.controls.len() {
+            break;
+        }
         let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
         push_extended_ctrl(&mut code_units, ctrl_code, ctrl_id);
 
@@ -731,6 +743,7 @@ fn control_char_code_and_id(ctrl: &Control) -> (u16, u32) {
         Control::PageNumberPos(_) => (0x0015, tags::CTRL_PAGE_NUM_POS),
         Control::PageHide(_) => (0x0015, tags::CTRL_PAGE_HIDE),
         Control::Bookmark(_) => (0x0016, tags::CTRL_BOOKMARK),
+        Control::Markpen(_) => (0, 0),
         Control::Hyperlink(_) => (0x000B, 0),
         Control::Ruby(_) => (0x000B, 0),
         Control::CharOverlap(_) => (0x0017, tags::CTRL_TCPS),
@@ -738,6 +751,20 @@ fn control_char_code_and_id(ctrl: &Control) -> (u16, u32) {
         Control::Equation(_) => (0x000B, tags::CTRL_EQUATION),
         Control::Form(_) => (0x000B, tags::CTRL_FORM),
         Control::Unknown(u) => (0x000B, u.ctrl_id),
+    }
+}
+
+fn is_hwp5_body_text_control(ctrl: &Control) -> bool {
+    !matches!(ctrl, Control::Markpen(_))
+}
+
+fn advance_to_hwp5_body_text_control(para: &Paragraph, ctrl_idx: &mut usize) {
+    while para
+        .controls
+        .get(*ctrl_idx)
+        .is_some_and(|ctrl| !is_hwp5_body_text_control(ctrl))
+    {
+        *ctrl_idx += 1;
     }
 }
 

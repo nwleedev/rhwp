@@ -40,6 +40,8 @@ pub enum Control {
     PageNumberPos(PageNumberPos),
     /// 책갈피 ('bokm')
     Bookmark(Bookmark),
+    /// 형광펜 범위 경계 (HWPX markpenBegin/markpenEnd)
+    Markpen(Markpen),
     /// 하이퍼링크 ('%hlk')
     Hyperlink(Hyperlink),
     /// 덧말 ('tdut')
@@ -149,6 +151,15 @@ pub struct PageNumberPos {
 pub struct Bookmark {
     /// 책갈피 이름
     pub name: String,
+}
+
+/// 형광펜 범위 경계
+#[derive(Debug, Clone, Default)]
+pub struct Markpen {
+    /// 시작 경계 여부. false이면 종료 경계.
+    pub begin: bool,
+    /// 시작 경계의 색상 문자열
+    pub color: Option<String>,
 }
 
 /// 하이퍼링크 ('%hlk' 필드)

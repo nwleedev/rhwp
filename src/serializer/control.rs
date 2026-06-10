@@ -174,7 +174,7 @@ pub fn serialize_control(
         // [Task #852 Stage 2.4] 양식 개체 직렬화 — CTRL_HEADER + HWPTAG_FORM_OBJECT
         Control::Form(form) => serialize_form_control(form, level, records),
         // 미구현 컨트롤은 최소한의 CTRL_HEADER만 생성
-        Control::Hyperlink(_) | Control::Ruby(_) | Control::Unknown(_) => {
+        Control::Hyperlink(_) | Control::Ruby(_) | Control::Markpen(_) | Control::Unknown(_) => {
             let ctrl_id = match ctrl {
                 Control::Unknown(u) => u.ctrl_id,
                 _ => 0,

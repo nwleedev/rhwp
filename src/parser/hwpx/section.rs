@@ -8,7 +8,7 @@ use quick_xml::Reader;
 
 use crate::model::control::{
     AutoNumber, AutoNumberType, Bookmark, CharOverlap, Control, Equation, Field, FieldType,
-    FormObject, FormType, HiddenComment, NewNumber, PageHide, PageNumberPos, Ruby,
+    FormObject, FormType, HiddenComment, Markpen, NewNumber, PageHide, PageNumberPos, Ruby,
 };
 use crate::model::document::{Section, SectionDef};
 use crate::model::footnote::{Endnote, Footnote};
@@ -426,11 +426,21 @@ fn parse_paragraph(
                     }
                     b"t" => {
                         // 텍스트 읽기 (탭 확장 데이터 포함)
-                        let (text, tab_exts) = read_text_content_with_tabs(reader)?;
+                        let (text, tab_exts, markpens) =
+                            read_text_content_with_tabs_and_markpens(reader)?;
                         if text.is_empty() && tab_exts.is_empty() {
                             if let Some(span) = open_run.as_mut() {
                                 span.empty_t_count += 1;
                             }
+                        }
+                        let base_pos = calc_utf16_len_from_parts(&text_parts);
+                        for (relative_pos, markpen) in markpens {
+                            let control_idx = para.controls.len();
+                            para.controls.push(Control::Markpen(markpen));
+                            hwpx_zero_width_control_slots.push(HwpxControlSlot {
+                                control_idx,
+                                pos: base_pos.saturating_add(relative_pos),
+                            });
                         }
                         text_parts.push(text);
                         para.tab_extended.extend(tab_exts);
@@ -592,6 +602,15 @@ fn parse_paragraph(
                         if let Some(span) = open_run.as_mut() {
                             span.empty_t_count += 1;
                         }
+                    }
+                    b"markpenBegin" | b"markpenEnd" => {
+                        let control_idx = para.controls.len();
+                        let pos = calc_utf16_len_from_parts(&text_parts);
+                        para.controls.push(Control::Markpen(parse_markpen_attrs(
+                            ce,
+                            local == b"markpenBegin",
+                        )));
+                        hwpx_zero_width_control_slots.push(HwpxControlSlot { control_idx, pos });
                     }
                     b"lineBreak" | b"softHyphen" => {
                         text_parts.push("\n".to_string());
@@ -1510,8 +1529,16 @@ fn decode_xml_general_ref(r: &BytesRef<'_>) -> String {
 fn read_text_content_with_tabs(
     reader: &mut Reader<&[u8]>,
 ) -> Result<(String, Vec<[u16; 7]>), HwpxError> {
+    let (text, tab_ext_buf, _) = read_text_content_with_tabs_and_markpens(reader)?;
+    Ok((text, tab_ext_buf))
+}
+
+fn read_text_content_with_tabs_and_markpens(
+    reader: &mut Reader<&[u8]>,
+) -> Result<(String, Vec<[u16; 7]>, Vec<(u32, Markpen)>), HwpxError> {
     let mut text = String::new();
     let mut tab_ext_buf: Vec<[u16; 7]> = Vec::new();
+    let mut markpens: Vec<(u32, Markpen)> = Vec::new();
     let mut buf = Vec::new();
 
     loop {
@@ -1537,6 +1564,10 @@ fn read_text_content_with_tabs(
                         text.push('\t');
                         tab_ext_buf.push(parse_tab_extension(ce));
                     }
+                    b"markpenBegin" | b"markpenEnd" => {
+                        let pos = text.encode_utf16().count() as u32;
+                        markpens.push((pos, parse_markpen_attrs(ce, local == b"markpenBegin")));
+                    }
                     b"nbSpace" => text.push('\u{00A0}'),
                     b"fwSpace" => text.push('\u{2007}'),
                     _ => {}
@@ -1549,7 +1580,7 @@ fn read_text_content_with_tabs(
         buf.clear();
     }
 
-    Ok((text, tab_ext_buf))
+    Ok((text, tab_ext_buf, markpens))
 }
 
 fn parse_tab_extension(e: &quick_xml::events::BytesStart) -> [u16; 7] {
@@ -3924,6 +3955,19 @@ fn parse_bookmark_attrs(e: &quick_xml::events::BytesStart) -> Bookmark {
         }
     }
     bm
+}
+
+fn parse_markpen_attrs(e: &quick_xml::events::BytesStart, begin: bool) -> Markpen {
+    let mut markpen = Markpen { begin, color: None };
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == b"color" {
+            let color = attr_str(&attr);
+            if !color.is_empty() {
+                markpen.color = Some(color);
+            }
+        }
+    }
+    markpen
 }
 
 fn parse_new_num_attrs(e: &quick_xml::events::BytesStart) -> NewNumber {
