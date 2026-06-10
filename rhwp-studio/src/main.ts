@@ -92,6 +92,15 @@ type TableCellTextParams = {
   text?: unknown;
 };
 
+type TableCellResizeParams = {
+  cellIndex?: unknown;
+  controlIndex?: unknown;
+  heightDelta?: unknown;
+  parentParaIndex?: unknown;
+  sectionIndex?: unknown;
+  widthDelta?: unknown;
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -492,6 +501,66 @@ function setTableCellText(params?: TableCellTextParams): Record<string, unknown>
       cellIndex,
       cellParaIndex,
     },
+  };
+}
+
+function finiteDelta(value: unknown, name: string): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) {
+    throw new Error(`${name} must be a non-zero finite number.`);
+  }
+  if (Math.abs(numeric) > 2_000) {
+    throw new Error(`${name} is too large for proof resize.`);
+  }
+  return Math.trunc(numeric);
+}
+
+function resizeTableCellForProof(params?: TableCellResizeParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  const sectionIndex = finiteIndex(params?.sectionIndex, 'sectionIndex');
+  const parentParaIndex = finiteIndex(params?.parentParaIndex, 'parentParaIndex');
+  const controlIndex = finiteIndex(params?.controlIndex, 'controlIndex');
+  const cellIndex = finiteIndex(params?.cellIndex, 'cellIndex');
+  const widthDelta = params?.widthDelta == null ? 200 : finiteDelta(params.widthDelta, 'widthDelta');
+  const heightDelta = params?.heightDelta == null ? undefined : finiteDelta(params.heightDelta, 'heightDelta');
+  const updates = [{
+    cellIdx: cellIndex,
+    widthDelta,
+    ...(heightDelta == null ? {} : { heightDelta }),
+  }];
+  const position = inputHandler.getCursorPosition();
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'resizeTableCells',
+    operation: (bridge) => {
+      bridge.resizeTableCells(sectionIndex, parentParaIndex, controlIndex, updates);
+      return position;
+    },
+    meta: {
+      actionId: 'table-cell-resize-proof-rpc',
+      domain: 'table',
+      refresh: 'full',
+      dirtyScope: 'table',
+    },
+  });
+
+  return {
+    ok: true,
+    operation: 'resizeTableCells',
+    target: {
+      sectionIndex,
+      parentParaIndex,
+      controlIndex,
+      cellIndex,
+    },
+    updates,
   };
 }
 
@@ -1454,6 +1523,10 @@ window.addEventListener('message', async (e) => {
       case 'setTableCellText':
         await initPromise;
         reply(setTableCellText(params));
+        break;
+      case 'resizeTableCellForProof':
+        await initPromise;
+        reply(resizeTableCellForProof(params));
         break;
       case 'getCaptureCoverageObservations':
         await initPromise;
