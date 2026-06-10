@@ -1258,6 +1258,21 @@ window.addEventListener('message', async (e) => {
         reply(result);
         break;
       }
+      case 'setFieldValue': {
+        await initPromise;
+        const fieldId = Number(params?.fieldId);
+        const value = String(params?.value ?? '');
+        if (!Number.isInteger(fieldId)) {
+          reply(undefined, 'Field id is required.');
+          break;
+        }
+        const result = wasm.setFieldValue(fieldId, value);
+        if (result.ok === true) {
+          inputHandler?.commitExternalDirectMutation('field_value_replace', 'wasm_set_field_value');
+        }
+        reply(result);
+        break;
+      }
       case 'getCaptureCoverageObservations':
         await initPromise;
         reply({ observations: inputHandler?.getCaptureCoverageObservations(params ?? {}) ?? [] });
