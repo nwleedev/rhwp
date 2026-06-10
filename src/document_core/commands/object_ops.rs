@@ -1557,6 +1557,7 @@ impl DocumentCore {
             cells,
             cell_grid: Vec::new(),
             page_break: TablePageBreak::None,
+            hwpx_page_break: None,
             repeat_header: false,
             caption: None,
             common: crate::model::shape::CommonObjAttr {
@@ -1906,6 +1907,7 @@ impl DocumentCore {
             cells,
             cell_grid: Vec::new(),
             page_break: TablePageBreak::RowBreak,
+            hwpx_page_break: None,
             repeat_header: false,
             caption: None,
             common: crate::model::shape::CommonObjAttr {

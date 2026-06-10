@@ -30,6 +30,8 @@ pub struct Table {
     pub cell_grid: Vec<Option<usize>>,
     /// 쪽 경계에서 나눔 (0: 나누지 않음, 1: 셀 단위로 나눔)
     pub page_break: TablePageBreak,
+    /// HWPX `<hp:tbl pageBreak="...">` 원본 문자열 (라운드트립 보존용)
+    pub hwpx_page_break: Option<String>,
     /// 제목 줄 자동 반복
     pub repeat_header: bool,
     /// 캡션 정보

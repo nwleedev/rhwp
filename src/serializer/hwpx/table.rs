@@ -61,7 +61,10 @@ pub fn write_table<W: Write>(
     let text_wrap = text_wrap_str(table.common.text_wrap);
     let text_flow = text_flow_str(table.common.text_flow);
     let lock = bool01(false);
-    let page_break = table_page_break_str(table.page_break);
+    let page_break = table
+        .hwpx_page_break
+        .as_deref()
+        .unwrap_or_else(|| table_page_break_str(table.page_break));
     let repeat_header = bool01(table.repeat_header);
     let row_cnt = table.row_count.to_string();
     let col_cnt = table.col_count.to_string();
@@ -571,6 +574,35 @@ mod tests {
         let cz = xml.find("<hp:cellSz ").unwrap();
         let cm = xml.find("<hp:cellMargin ").unwrap();
         assert!(sl < ca && ca < cs && cs < cz && cz < cm);
+    }
+
+    #[test]
+    fn table_page_break_preserves_hwpx_source_attr() {
+        let mut t = empty_table(1, 1);
+        t.page_break = TablePageBreak::RowBreak;
+        t.hwpx_page_break = Some("CELL".to_string());
+
+        let xml = serialize(&t);
+
+        assert!(
+            xml.contains(r#"pageBreak="CELL""#),
+            "HWPX pageBreak source attribute must be preserved: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn table_page_break_keeps_fallback_mapping_without_hwpx_source_attr() {
+        let mut t = empty_table(1, 1);
+        t.page_break = TablePageBreak::RowBreak;
+
+        let xml = serialize(&t);
+
+        assert!(
+            xml.contains(r#"pageBreak="TABLE""#),
+            "non-HWPX fallback mapping must remain unchanged: {}",
+            xml
+        );
     }
 
     #[test]

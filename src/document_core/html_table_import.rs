@@ -598,6 +598,7 @@ impl DocumentCore {
             cells,
             cell_grid: Vec::new(),
             page_break: TablePageBreak::None,
+            hwpx_page_break: None,
             repeat_header: has_header_row,
             caption: None,
             common: Default::default(),

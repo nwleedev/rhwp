@@ -1596,6 +1596,9 @@ fn parse_table(
             }
             b"pageBreak" => {
                 let val = attr_str(&attr);
+                if !val.is_empty() {
+                    table.hwpx_page_break = Some(val.clone());
+                }
                 table.page_break = match val.as_str() {
                     // HWPX pageBreak="CELL" is serialized by Hancom as HWP5
                     // row-break (TABLE attr bit 1). HWPX pageBreak="TABLE"
