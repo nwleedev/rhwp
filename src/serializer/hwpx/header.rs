@@ -449,12 +449,21 @@ fn write_char_pr<W: Write>(
             &[("type", outline_type_str(cs.outline_type))],
         )?;
     }
-    if cs.shadow_type != 0 {
+    if cs.shadow_type != 0
+        || cs.shadow_color != 0
+        || cs.shadow_offset_x != 0
+        || cs.shadow_offset_y != 0
+    {
+        let shadow_type = if cs.shadow_type == 0 {
+            "NONE"
+        } else {
+            "CONTINUOUS"
+        };
         empty_tag(
             w,
             "hh:shadow",
             &[
-                ("type", "CONTINUOUS"),
+                ("type", shadow_type),
                 ("color", &color_hex(cs.shadow_color)),
                 ("offsetX", &cs.shadow_offset_x.to_string()),
                 ("offsetY", &cs.shadow_offset_y.to_string()),
@@ -1072,6 +1081,29 @@ mod tests {
         let expected = doc.doc_info.char_shapes.len();
         let actual = xml.matches("<hh:charPr ").count();
         assert_eq!(actual, expected, "charPr count mismatch");
+    }
+
+    #[test]
+    fn write_char_pr_preserves_shadow_metadata_when_shadow_type_is_none() {
+        let cs = CharShape {
+            base_size: 1200,
+            ratios: [100; 7],
+            relative_sizes: [100; 7],
+            shadow_type: 0,
+            shadow_color: 0x00C0C0C0,
+            shadow_offset_x: 10,
+            shadow_offset_y: 10,
+            ..CharShape::default()
+        };
+        let mut writer = Writer::new(Vec::new());
+
+        write_char_pr(&mut writer, 0, &cs).expect("write charPr");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+
+        assert!(
+            xml.contains(r##"<hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>"##),
+            "shadow metadata with type NONE must survive charPr serialization: {xml}"
+        );
     }
 
     #[test]

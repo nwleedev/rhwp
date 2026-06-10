@@ -26,7 +26,9 @@ use crate::model::control::{
     PageHide, PageNumberPos,
 };
 use crate::model::document::{Document, Section};
-use crate::model::footnote::{Endnote, Footnote};
+use crate::model::footnote::{
+    Endnote, Footnote, FootnoteNumbering, FootnotePlacement, FootnoteShape, NumberFormat,
+};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::page::{
     ColumnDef, ColumnDirection, ColumnType, PageBorderFill, PageBorderFillApply,
@@ -91,6 +93,7 @@ pub fn write_section(
     out = out.replacen(TEMPLATE_TEXT_RUN, &first_body, 1);
     out = replace_page_pr(&out, &section.section_def.page_def);
     out = replace_start_num(&out, &section.section_def);
+    out = replace_note_prs(&out, &section.section_def);
     out = replace_page_border_fills(&out, &section.section_def);
     if let Some(first_char_shape_id) = first_para.and_then(first_section_run_char_shape_id) {
         out = replace_first_section_run_char_shape(&out, first_char_shape_id);
@@ -219,6 +222,109 @@ fn render_start_num(section_def: &crate::model::document::SectionDef) -> String 
         section_def.table_num,
         section_def.equation_num,
     )
+}
+
+const TEMPLATE_FOOT_NOTE_PR: &str = concat!(
+    r#"<hp:footNotePr>"#,
+    r#"<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>"#,
+    r##"<hp:noteLine length="-1" type="SOLID" width="0.12 mm" color="#000000"/>"##,
+    r#"<hp:noteSpacing betweenNotes="283" belowLine="567" aboveLine="850"/>"#,
+    r#"<hp:numbering type="CONTINUOUS" newNum="1"/>"#,
+    r#"<hp:placement place="EACH_COLUMN" beneathText="0"/>"#,
+    r#"</hp:footNotePr>"#,
+);
+const TEMPLATE_END_NOTE_PR: &str = concat!(
+    r#"<hp:endNotePr>"#,
+    r#"<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>"#,
+    r##"<hp:noteLine length="14692344" type="SOLID" width="0.12 mm" color="#000000"/>"##,
+    r#"<hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/>"#,
+    r#"<hp:numbering type="CONTINUOUS" newNum="1"/>"#,
+    r#"<hp:placement place="END_OF_DOCUMENT" beneathText="0"/>"#,
+    r#"</hp:endNotePr>"#,
+);
+
+fn replace_note_prs(xml: &str, section_def: &crate::model::document::SectionDef) -> String {
+    let out = if xml.contains(TEMPLATE_FOOT_NOTE_PR) {
+        xml.replacen(
+            TEMPLATE_FOOT_NOTE_PR,
+            &render_note_pr("footNotePr", &section_def.footnote_shape, false),
+            1,
+        )
+    } else {
+        xml.to_string()
+    };
+    if out.contains(TEMPLATE_END_NOTE_PR) {
+        out.replacen(
+            TEMPLATE_END_NOTE_PR,
+            &render_note_pr("endNotePr", &section_def.endnote_shape, true),
+            1,
+        )
+    } else {
+        out
+    }
+}
+
+fn render_note_pr(tag: &str, shape: &FootnoteShape, is_end_note: bool) -> String {
+    format!(
+        concat!(
+            r#"<hp:{tag}>"#,
+            r#"<hp:autoNumFormat type="{number_format}" userChar="{user_char}" prefixChar="{prefix_char}" suffixChar="{suffix_char}" supscript="0"/>"#,
+            r#"<hp:noteLine length="{line_length}" type="{line_type}" width="{line_width}" color="{line_color}"/>"#,
+            r#"<hp:noteSpacing betweenNotes="{between_notes}" belowLine="{below_line}" aboveLine="{above_line}"/>"#,
+            r#"<hp:numbering type="{numbering}" newNum="{new_num}"/>"#,
+            r#"<hp:placement place="{placement}" beneathText="0"/>"#,
+            r#"</hp:{tag}>"#,
+        ),
+        tag = tag,
+        number_format = note_number_format_to_hwpx(shape.number_format),
+        user_char = ctrl_char_attr(shape.user_char),
+        prefix_char = ctrl_char_attr(shape.prefix_char),
+        suffix_char = ctrl_char_attr(shape.suffix_char),
+        line_length = shape.separator_length,
+        line_type = column_line_type_to_hwpx(shape.separator_line_type),
+        line_width = column_line_width_to_hwpx(shape.separator_line_width),
+        line_color = color_ref_to_hwpx(shape.separator_color),
+        between_notes = shape.raw_unknown,
+        below_line = shape.note_spacing,
+        above_line = shape.separator_margin_bottom,
+        numbering = note_numbering_to_hwpx(shape.numbering),
+        new_num = shape.start_number,
+        placement = note_placement_to_hwpx(shape.placement, is_end_note),
+    )
+}
+
+fn note_number_format_to_hwpx(value: NumberFormat) -> &'static str {
+    match value {
+        NumberFormat::Digit => "DIGIT",
+        NumberFormat::CircledDigit => "CIRCLE_DIGIT",
+        NumberFormat::UpperRoman => "ROMAN_CAPITAL",
+        NumberFormat::LowerRoman => "ROMAN_SMALL",
+        NumberFormat::UpperAlpha => "LATIN_CAPITAL",
+        NumberFormat::LowerAlpha => "LATIN_SMALL",
+        NumberFormat::HangulSyllable => "HANGUL_SYLLABLE",
+        NumberFormat::CircledHangulSyllable => "CIRCLED_HANGUL_SYLLABLE",
+        NumberFormat::HangulJamo => "HANGUL_JAMO",
+        NumberFormat::HanjaDigit => "HANJA",
+        NumberFormat::UserChar => "USER_CHAR",
+        _ => "DIGIT",
+    }
+}
+
+fn note_numbering_to_hwpx(value: FootnoteNumbering) -> &'static str {
+    match value {
+        FootnoteNumbering::Continue => "CONTINUOUS",
+        FootnoteNumbering::RestartSection => "ON_SECTION",
+        FootnoteNumbering::RestartPage => "ON_PAGE",
+    }
+}
+
+fn note_placement_to_hwpx(value: FootnotePlacement, is_end_note: bool) -> &'static str {
+    match value {
+        FootnotePlacement::EachColumn if is_end_note => "END_OF_DOCUMENT",
+        FootnotePlacement::EachColumn => "EACH_COLUMN",
+        FootnotePlacement::BelowText => "END_OF_SECTION",
+        FootnotePlacement::RightColumn => "RIGHT_COLUMN",
+    }
 }
 
 /// IR의 Paragraph를 기반으로 `<hp:p>` 시작 태그를 생성.
@@ -2719,6 +2825,56 @@ mod tests {
         assert_eq!(page_def.margin_header, 2836, "margin_header");
         assert_eq!(page_def.margin_footer, 2836, "margin_footer");
         assert_eq!(page_def.margin_gutter, 0, "margin_gutter");
+    }
+
+    #[test]
+    fn section_roundtrip_preserves_note_pr_shapes() {
+        let mut para = Paragraph::default();
+        para.text = "x".to_string();
+        let (doc, mut section) = make_doc_with_paragraph(para);
+        section.section_def.footnote_shape.suffix_char = '\0';
+        section.section_def.footnote_shape.separator_length = -1;
+        section.section_def.footnote_shape.separator_line_type = 1;
+        section.section_def.footnote_shape.separator_line_width = 4;
+        section.section_def.footnote_shape.separator_color = 0;
+        section.section_def.footnote_shape.separator_margin_bottom = 1000;
+        section.section_def.footnote_shape.note_spacing = 0;
+        section.section_def.footnote_shape.raw_unknown = 0;
+        section.section_def.footnote_shape.numbering = FootnoteNumbering::Continue;
+        section.section_def.footnote_shape.placement = FootnotePlacement::EachColumn;
+
+        section.section_def.endnote_shape.suffix_char = '\0';
+        section.section_def.endnote_shape.separator_length = -1;
+        section.section_def.endnote_shape.separator_line_type = 1;
+        section.section_def.endnote_shape.separator_line_width = 4;
+        section.section_def.endnote_shape.separator_color = 0;
+        section.section_def.endnote_shape.separator_margin_bottom = 1000;
+        section.section_def.endnote_shape.note_spacing = 0;
+        section.section_def.endnote_shape.raw_unknown = 0;
+        section.section_def.endnote_shape.numbering = FootnoteNumbering::Continue;
+        section.section_def.endnote_shape.placement = FootnotePlacement::EachColumn;
+
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        let reparsed = crate::parser::hwpx::section::parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(reparsed.section_def.footnote_shape.suffix_char, '\0');
+        assert_eq!(
+            reparsed.section_def.footnote_shape.separator_margin_bottom,
+            1000
+        );
+        assert_eq!(reparsed.section_def.footnote_shape.note_spacing, 0);
+        assert_eq!(reparsed.section_def.footnote_shape.separator_line_width, 4);
+        assert_eq!(reparsed.section_def.endnote_shape.suffix_char, '\0');
+        assert_eq!(reparsed.section_def.endnote_shape.separator_length, -1);
+        assert_eq!(reparsed.section_def.endnote_shape.separator_margin_top, -1);
+        assert_eq!(
+            reparsed.section_def.endnote_shape.separator_margin_bottom,
+            1000
+        );
+        assert_eq!(reparsed.section_def.endnote_shape.note_spacing, 0);
+        assert_eq!(reparsed.section_def.endnote_shape.separator_line_width, 4);
     }
 
     #[test]
