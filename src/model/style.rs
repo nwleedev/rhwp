@@ -253,6 +253,8 @@ pub struct NumberingHead {
 pub struct Bullet {
     /// 원본 레코드 바이트 (라운드트립 보존용)
     pub raw_data: Option<Vec<u8>>,
+    /// HWPX `<hh:bullet>` 원본 XML (라운드트립 보존용)
+    pub hwpx_raw_xml: Option<String>,
     /// 속성 (정렬, 너비 따름, 자동 내어쓰기 등)
     pub attr: u32,
     /// 너비 보정값

@@ -17,9 +17,9 @@ use quick_xml::Writer;
 
 use crate::model::document::{DocInfo, DocProperties, Document};
 use crate::model::style::{
-    Alignment, BorderFill, BorderLine, BorderLineType, CharShape, DiagonalLine, FillType, Font,
-    GradientFill, HeadType, LineSpacingType, Numbering, NumberingHead, ParaShape, SolidFill, Style,
-    TabDef,
+    Alignment, BorderFill, BorderLine, BorderLineType, Bullet, CharShape, DiagonalLine, FillType,
+    Font, GradientFill, HeadType, LineSpacingType, Numbering, NumberingHead, ParaShape, SolidFill,
+    Style, TabDef,
 };
 use crate::model::ColorRef;
 
@@ -73,6 +73,7 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
     write_char_properties(&mut w, &doc.doc_info, ctx)?;
     write_tab_properties(&mut w, &doc.doc_info)?;
     write_numberings(&mut w, &doc.doc_info)?;
+    write_bullets(&mut w, &doc.doc_info)?;
     write_para_properties(&mut w, &doc.doc_info, ctx)?;
     write_styles(&mut w, &doc.doc_info, ctx)?;
     write_memo_properties(&mut w, &doc.doc_info)?;
@@ -903,6 +904,81 @@ fn numbering_format_str(value: u8) -> &'static str {
     }
 }
 
+fn write_bullets<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<(), SerializeError> {
+    if doc_info.bullets.is_empty() {
+        return Ok(());
+    }
+
+    start_tag_attrs(
+        w,
+        "hh:bullets",
+        &[("itemCnt", &doc_info.bullets.len().to_string())],
+    )?;
+    for (idx, bullet) in doc_info.bullets.iter().enumerate() {
+        write_bullet(w, idx, bullet)?;
+    }
+    end_tag(w, "hh:bullets")?;
+    Ok(())
+}
+
+fn write_bullet<W: Write>(
+    w: &mut Writer<W>,
+    idx: usize,
+    bullet: &Bullet,
+) -> Result<(), SerializeError> {
+    if let Some(raw_xml) = bullet.hwpx_raw_xml.as_ref() {
+        w.get_mut()
+            .write_all(raw_xml.as_bytes())
+            .map_err(|e| SerializeError::XmlError(format!("bullet preserve: {}", e)))?;
+        return Ok(());
+    }
+
+    let id = (idx + 1).to_string();
+    let char_value = bullet.bullet_char.to_string();
+    let width_adjust = bullet.width_adjust.to_string();
+    let text_offset = bullet.text_distance.to_string();
+    start_tag_attrs(
+        w,
+        "hh:bullet",
+        &[
+            ("id", id.as_str()),
+            ("char", char_value.as_str()),
+            ("useImage", if bullet.image_bullet != 0 { "1" } else { "0" }),
+        ],
+    )?;
+    empty_tag(
+        w,
+        "hh:paraHead",
+        &[
+            ("level", "0"),
+            ("align", "LEFT"),
+            (
+                "useInstWidth",
+                if bullet.attr & 0x01 != 0 { "1" } else { "0" },
+            ),
+            (
+                "autoIndent",
+                if bullet.attr & 0x02 != 0 { "1" } else { "0" },
+            ),
+            ("widthAdjust", width_adjust.as_str()),
+            ("textOffsetType", "PERCENT"),
+            ("textOffset", text_offset.as_str()),
+            ("numFormat", "DIGIT"),
+            ("charPrIDRef", "4294967295"),
+            (
+                "checkable",
+                if bullet.check_bullet_char != '\0' {
+                    "1"
+                } else {
+                    "0"
+                },
+            ),
+        ],
+    )?;
+    end_tag(w, "hh:bullet")?;
+    Ok(())
+}
+
 // =====================================================================
 // <hh:paraProperties>
 // =====================================================================
@@ -1289,6 +1365,43 @@ mod tests {
         let xml = std::str::from_utf8(&bytes).unwrap();
         assert!(xml.contains("<hh:head"));
         assert!(xml.contains("</hh:head>"));
+    }
+
+    #[test]
+    fn write_header_preserves_hwpx_bullets() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" version="1.2" secCnt="1">
+  <hh:refList>
+    <hh:numberings itemCnt="0"/>
+    <hh:bullets itemCnt="2"><hh:bullet id="1" char="-" useImage="0"><hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0"/></hh:bullet><hh:bullet id="2" char="*" useImage="0"><hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0"/></hh:bullet></hh:bullets>
+  </hh:refList>
+</hh:head>"##;
+        let (mut doc_info, doc_properties) = parse_hwpx_header(input).expect("parse header");
+        assert_eq!(doc_info.bullets.len(), 2, "fixture must parse bullets");
+        doc_info.numberings.push(Numbering::default());
+
+        let doc = Document {
+            doc_info,
+            doc_properties,
+            ..Document::default()
+        };
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_header(&doc, &ctx).expect("write_header");
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        assert!(
+            xml.contains(r#"<hh:bullets itemCnt="2">"#),
+            "HWPX header serializer must emit the bullets container: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<hh:bullet id="1" char="-" useImage="0">"#),
+            "first preserved bullet must be serialized: {xml}"
+        );
+        assert!(
+            xml.find("<hh:numberings").unwrap() < xml.find("<hh:bullets").unwrap()
+                && xml.find("<hh:bullets").unwrap() < xml.find("<hh:paraProperties").unwrap_or(xml.len()),
+            "bullets must remain in refList order after numberings and before paraProperties: {xml}"
+        );
     }
 
     #[test]

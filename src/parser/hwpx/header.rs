@@ -5,6 +5,7 @@
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::Writer;
 
 use crate::model::document::{DocInfo, DocProperties, RawRecord};
 use crate::model::style::*;
@@ -186,6 +187,10 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                     }
                     b"memoPr" => {
                         parse_memo_shape(e, &mut doc_info);
+                    }
+                    b"bullet" => {
+                        let bullet = parse_bullet_hwpx(e, &mut reader)?;
+                        doc_info.bullets.push(bullet);
                     }
                     b"linkinfo" => {
                         parse_doc_option_linkinfo(e, &mut doc_info);
@@ -1809,6 +1814,7 @@ fn parse_bullet_hwpx(
     reader: &mut Reader<&[u8]>,
 ) -> Result<Bullet, HwpxError> {
     let mut bullet = Bullet::default();
+    let mut raw_writer = Writer::new(Vec::new());
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
@@ -1830,23 +1836,39 @@ fn parse_bullet_hwpx(
         }
     }
 
-    // 자식 <hh:paraHead>, <hh:image> 등 skip
-    if !is_empty_event(e) {
+    if is_empty_event(e) {
+        raw_writer
+            .write_event(Event::Empty(e.to_owned()))
+            .map_err(|e| HwpxError::XmlError(format!("bullet preserve: {}", e)))?;
+    } else {
+        raw_writer
+            .write_event(Event::Start(e.to_owned()))
+            .map_err(|e| HwpxError::XmlError(format!("bullet preserve: {}", e)))?;
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::End(ref ee)) => {
-                    if local_name(ee.name().as_ref()) == b"bullet" {
+                Ok(Event::Eof) => break,
+                Ok(event) => {
+                    let should_break = matches!(
+                        &event,
+                        Event::End(ee) if local_name(ee.name().as_ref()) == b"bullet"
+                    );
+                    raw_writer
+                        .write_event(event.into_owned())
+                        .map_err(|e| HwpxError::XmlError(format!("bullet preserve: {}", e)))?;
+                    if should_break {
                         break;
                     }
                 }
-                Ok(Event::Eof) => break,
                 Err(e) => return Err(HwpxError::XmlError(format!("bullet: {}", e))),
-                _ => {}
             }
             buf.clear();
         }
     }
+    bullet.hwpx_raw_xml = Some(
+        String::from_utf8(raw_writer.into_inner())
+            .map_err(|e| HwpxError::XmlError(format!("bullet preserve utf8: {}", e)))?,
+    );
 
     Ok(bullet)
 }

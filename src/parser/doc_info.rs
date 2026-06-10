@@ -831,6 +831,7 @@ fn parse_bullet(data: &[u8]) -> Result<Bullet, DocInfoError> {
 
     Ok(Bullet {
         raw_data: None,
+        hwpx_raw_xml: None,
         attr,
         width_adjust,
         text_distance,
