@@ -75,6 +75,7 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
     write_numberings(&mut w, &doc.doc_info)?;
     write_para_properties(&mut w, &doc.doc_info, ctx)?;
     write_styles(&mut w, &doc.doc_info, ctx)?;
+    write_memo_properties(&mut w, &doc.doc_info)?;
     end_tag(&mut w, "hh:refList")?;
 
     write_compatible_document(&mut w)?;
@@ -1159,6 +1160,86 @@ fn write_style<W: Write>(w: &mut Writer<W>, id: u16, st: &Style) -> Result<(), S
 }
 
 // =====================================================================
+// <hh:memoProperties>
+// =====================================================================
+fn write_memo_properties<W: Write>(
+    w: &mut Writer<W>,
+    doc_info: &DocInfo,
+) -> Result<(), SerializeError> {
+    let memo_records: Vec<_> = doc_info
+        .extra_records
+        .iter()
+        .filter(|record| record.tag_id == crate::parser::tags::HWPTAG_MEMO_SHAPE)
+        .collect();
+    if memo_records.is_empty() {
+        return Ok(());
+    }
+
+    start_tag_attrs(
+        w,
+        "hh:memoProperties",
+        &[("itemCnt", &memo_records.len().to_string())],
+    )?;
+    for record in memo_records {
+        write_memo_pr(w, &record.data)?;
+    }
+    end_tag(w, "hh:memoProperties")
+}
+
+fn write_memo_pr<W: Write>(w: &mut Writer<W>, data: &[u8]) -> Result<(), SerializeError> {
+    if data.len() < 22 {
+        return Ok(());
+    }
+
+    let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]).to_string();
+    let line_type = memo_line_type_str(data[4]);
+    let line_width = data[5].to_string();
+    let line_color = color_hex(u32::from_le_bytes([data[6], data[7], data[8], data[9]]));
+    let fill_color = color_hex(u32::from_le_bytes([data[10], data[11], data[12], data[13]]));
+    let active_color = color_hex(u32::from_le_bytes([data[14], data[15], data[16], data[17]]));
+    let memo_type = memo_type_str(u32::from_le_bytes([data[18], data[19], data[20], data[21]]));
+
+    empty_tag(
+        w,
+        "hh:memoPr",
+        &[
+            ("width", width.as_str()),
+            ("lineWidth", line_width.as_str()),
+            ("lineType", line_type),
+            ("lineColor", line_color.as_str()),
+            ("fillColor", fill_color.as_str()),
+            ("activeColor", active_color.as_str()),
+            ("memoType", memo_type),
+        ],
+    )
+}
+
+fn memo_line_type_str(value: u8) -> &'static str {
+    match value {
+        1 => "SOLID",
+        2 => "DASH_DOT",
+        3 => "DASH",
+        4 => "DASH_DOT_DOT",
+        5 => "LONG_DASH",
+        6 => "CIRCLE",
+        7 => "DOUBLE_SLIM",
+        8 => "SLIM_THICK",
+        9 => "THICK_SLIM",
+        10 => "SLIM_THICK_SLIM",
+        11 => "WAVE",
+        12 => "DOUBLE_WAVE",
+        _ => "NONE",
+    }
+}
+
+fn memo_type_str(value: u32) -> &'static str {
+    match value {
+        0 => "NOMAL",
+        _ => "NOMAL",
+    }
+}
+
+// =====================================================================
 // <hh:compatibleDocument>, <hh:docOption>, <hh:trackchageConfig>
 // =====================================================================
 fn write_compatible_document<W: Write>(w: &mut Writer<W>) -> Result<(), SerializeError> {
@@ -1195,8 +1276,10 @@ use super::utils::start_tag;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::document::RawRecord;
     use crate::parser::hwpx::header::parse_hwpx_header;
     use crate::parser::hwpx::parse_hwpx;
+    use crate::parser::tags;
 
     #[test]
     fn write_header_runs_on_empty_document() {
@@ -1701,6 +1784,35 @@ mod tests {
         assert_eq!(actual.heads[0].text_distance, 35);
         assert_eq!(actual.heads[0].char_shape_id, 20);
         assert_eq!(actual.heads[0].number_format, 8);
+    }
+
+    #[test]
+    fn write_header_preserves_memo_shape_record() {
+        let memo_data = vec![
+            0xe7, 0x3c, 0x00, 0x00, 0x03, 0x05, 0xa9, 0xa9, 0xa9, 0x00, 0xfd, 0xfc, 0xc6, 0x00,
+            0xc0, 0xdb, 0xfb, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut doc = Document::default();
+        doc.doc_info.extra_records = vec![RawRecord {
+            tag_id: tags::HWPTAG_MEMO_SHAPE,
+            level: 1,
+            data: memo_data.clone(),
+        }];
+        doc.doc_info.memo_shape_count = 1;
+
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+        let memo_records: Vec<_> = doc_info
+            .extra_records
+            .iter()
+            .filter(|record| record.tag_id == tags::HWPTAG_MEMO_SHAPE)
+            .collect();
+
+        assert_eq!(doc_info.memo_shape_count, 1);
+        assert_eq!(memo_records.len(), 1);
+        assert_eq!(memo_records[0].level, 1);
+        assert_eq!(memo_records[0].data, memo_data);
     }
 
     #[test]

@@ -332,6 +332,7 @@ fn note_placement_to_hwpx(value: FootnotePlacement, is_end_note: bool) -> &'stat
 /// `id` 는 문단 순서 기반(0, 1, 2, ...)로 할당한다. 한컴 샘플은 랜덤 해시도 쓰지만
 /// 파서는 id 를 무시하므로 순차값으로 충분.
 pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
+    let id = preserved_paragraph_id(p).unwrap_or(id);
     let page_break = if matches!(p.column_type, ColumnBreakType::Page) {
         1
     } else {
@@ -346,6 +347,11 @@ pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
         r#"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="{}" columnBreak="{}" merged="0">"#,
         id, p.para_shape_id, p.style_id, page_break, column_break,
     )
+}
+
+fn preserved_paragraph_id(p: &Paragraph) -> Option<u32> {
+    let bytes = p.raw_header_extra.get(6..10)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 /// 문단 첫 run 의 charPrIDRef. IR의 `char_shapes[0].char_shape_id` 사용.
@@ -1420,16 +1426,18 @@ fn render_header_footer(
     h: HeaderFooterFields<'_>,
     ctx: &mut SerializeContext,
 ) -> String {
+    let vert_align = sublist_vert_align_to_hwpx(h.list_attr);
     let mut out = format!(
         concat!(
             r#"<hp:ctrl><hp:{tag} id="{id}" applyPageType="{apply}">"#,
-            r#"<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" "#,
+            r#"<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="{vert_align}" "#,
             r#"linkListIDRef="0" linkListNextIDRef="0" textWidth="{tw}" textHeight="{th}" "#,
             r#"hasTextRef="{tr}" hasNumRef="{nr}">"#
         ),
         tag = tag,
         id = h.id.unwrap_or(0),
         apply = apply_page_type_to_str(h.apply_to),
+        vert_align = vert_align,
         tw = h.text_width,
         th = h.text_height,
         tr = h.text_ref,
@@ -1449,10 +1457,19 @@ fn render_header_footer(
     out
 }
 
+fn sublist_vert_align_to_hwpx(list_attr: u32) -> &'static str {
+    match (list_attr >> 21) & 0b11 {
+        1 => "CENTER",
+        2 => "BOTTOM",
+        _ => "TOP",
+    }
+}
+
 /// render_header_footer 공통 인자 묶음 (Header/Footer가 동일 필드를 가짐).
 struct HeaderFooterFields<'a> {
     id: Option<u32>,
     apply_to: HeaderFooterApply,
+    list_attr: u32,
     text_width: u32,
     text_height: u32,
     text_ref: u8,
@@ -1466,6 +1483,7 @@ fn render_header(h: &Header, ctx: &mut SerializeContext) -> String {
         HeaderFooterFields {
             id: h.hwpx_id,
             apply_to: h.apply_to,
+            list_attr: h.list_attr,
             text_width: h.text_width,
             text_height: h.text_height,
             text_ref: h.text_ref,
@@ -1482,6 +1500,7 @@ fn render_footer(f: &Footer, ctx: &mut SerializeContext) -> String {
         HeaderFooterFields {
             id: f.hwpx_id,
             apply_to: f.apply_to,
+            list_attr: f.list_attr,
             text_width: f.text_width,
             text_height: f.text_height,
             text_ref: f.text_ref,
@@ -2125,6 +2144,23 @@ mod tests {
         assert!(
             xml.contains(r#"styleIDRef="3""#),
             "<hp:p> must reflect style_id=3"
+        );
+    }
+
+    #[test]
+    fn hp_p_preserves_id_from_raw_header_extra() {
+        let mut para = Paragraph::default();
+        para.text = "hi".to_string();
+        para.raw_header_extra = vec![0, 0, 0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12];
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:p id="305419896""#),
+            "<hp:p> id should preserve raw_header_extra instance id: {}",
+            &xml[..200.min(xml.len())]
         );
     }
 
@@ -3031,6 +3067,45 @@ mod tests {
             out.contains(r#"<hp:footer id="3" applyPageType="BOTH">"#),
             "footer id must be preserved after section parse/write roundtrip"
         );
+    }
+
+    #[test]
+    fn footer_roundtrip_preserves_sublist_vertical_align() {
+        let xml = r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+<hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
+  <hp:run charPrIDRef="0">
+    <hp:ctrl>
+      <hp:footer id="3" applyPageType="BOTH">
+        <hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="BOTTOM" linkListIDRef="0" linkListNextIDRef="0" textWidth="42520" textHeight="1000" hasTextRef="1" hasNumRef="0">
+          <hp:p id="1" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>foot</hp:t></hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray></hp:p>
+        </hp:subList>
+      </hp:footer>
+    </hp:ctrl>
+  </hp:run>
+  <hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray>
+</hp:p>
+</hs:sec>"#;
+        let section = crate::parser::hwpx::section::parse_hwpx_section(xml).unwrap();
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let out = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+        let reparsed = crate::parser::hwpx::section::parse_hwpx_section(&out).unwrap();
+
+        let footer = reparsed.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Footer(footer) => Some(footer),
+                _ => None,
+            })
+            .expect("expected footer control");
+
+        assert!(
+            out.contains(r#"vertAlign="BOTTOM""#),
+            "footer subList vertical align must be serialized from list_attr: {out}"
+        );
+        assert_eq!((footer.list_attr >> 21) & 0b11, 2);
     }
 
     #[test]
