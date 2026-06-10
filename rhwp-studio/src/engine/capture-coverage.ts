@@ -33,6 +33,11 @@ export interface CaptureCoverageRequest {
   categories?: CaptureCoverageOperationCategory[];
 }
 
+export interface DirectMutationCoverageDescriptor {
+  category: CaptureCoverageOperationCategory;
+  sourceHook: string;
+}
+
 const textCommandTypes = new Set(['insertText', 'deleteText']);
 
 function isTableCellPosition(position: Partial<DocumentPosition> | undefined): boolean {
@@ -78,6 +83,18 @@ export class CaptureCoverageCollector {
       manifestOperationCount: 1,
       sourceHook: desc.kind === 'record' ? 'command_history_record' : 'execute_operation_command',
       surface: 'command_dispatcher',
+      unsupportedMutations: [],
+      verdict: 'supported_candidate',
+    });
+  }
+
+  recordDirectMutation(desc: DirectMutationCoverageDescriptor): void {
+    this.observations.push({
+      category: desc.category,
+      evidenceIds: [`runtime-direct-${this.nextEvidenceId++}`],
+      manifestOperationCount: 1,
+      sourceHook: desc.sourceHook,
+      surface: 'wasm_direct_mutation',
       unsupportedMutations: [],
       verdict: 'supported_candidate',
     });

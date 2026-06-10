@@ -150,6 +150,7 @@ export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolea
         this.cursor.hfSectionIdx, isHeader, this.cursor.hfApplyTo,
         this.cursor.hfParaIdx, hfOff - 1, 1,
       );
+      this.recordCaptureCoverageDirectMutation('header_footer_text_replace', 'wasm_delete_text_in_header_footer');
       this.cursor.setHfCursorPosition(this.cursor.hfParaIdx, hfOff - 1);
       this.afterEdit();
     } else if (this.cursor.hfParaIdx > 0) {
@@ -208,6 +209,7 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
           this.cursor.hfSectionIdx, isHeader, this.cursor.hfApplyTo,
           this.cursor.hfParaIdx, hfOff, 1,
         );
+        this.recordCaptureCoverageDirectMutation('header_footer_text_replace', 'wasm_delete_text_in_header_footer');
         this.afterEdit();
       } else if (this.cursor.hfParaIdx + 1 < info.paraCount) {
         // 문단 끝에서 Delete → 다음 문단과 병합 (다음 문단을 merge)
@@ -462,6 +464,7 @@ export function onInput(this: any, e?: InputEvent): void {
         this.cursor.hfSectionIdx, isHeader, this.cursor.hfApplyTo,
         this.cursor.hfParaIdx, this.cursor.hfCharOffset, text,
       );
+      this.recordCaptureCoverageDirectMutation('header_footer_text_replace', 'wasm_insert_text_in_header_footer');
       this.cursor.setHfCursorPosition(this.cursor.hfParaIdx, this.cursor.hfCharOffset + text.length);
       this.afterEdit();
     } catch (err) {
@@ -500,6 +503,7 @@ export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string):
       this.cursor.hfSectionIdx, isHeader, this.cursor.hfApplyTo,
       this.cursor.hfParaIdx, pos.charOffset, text,
     );
+    this.recordCaptureCoverageDirectMutation('header_footer_text_replace', 'wasm_insert_text_in_header_footer');
     return;
   }
   // 각주 편집 모드
@@ -529,6 +533,7 @@ export function deleteTextAt(this: any, pos: DocumentPosition, count: number): v
       this.cursor.hfSectionIdx, isHeader, this.cursor.hfApplyTo,
       this.cursor.hfParaIdx, pos.charOffset, count,
     );
+    this.recordCaptureCoverageDirectMutation('header_footer_text_replace', 'wasm_delete_text_in_header_footer');
     return;
   }
   // 각주 편집 모드

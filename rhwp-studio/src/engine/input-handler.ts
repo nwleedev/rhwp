@@ -25,7 +25,11 @@ import * as _text from './input-handler-text';
 import * as _picture from './input-handler-picture';
 import { isPageLocalTextEditCommand } from './input-edit-invalidation';
 import { CaptureCoverageCollector } from './capture-coverage';
-import type { CaptureCoverageObservation, CaptureCoverageRequest } from './capture-coverage';
+import type {
+  CaptureCoverageObservation,
+  CaptureCoverageOperationCategory,
+  CaptureCoverageRequest,
+} from './capture-coverage';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -1790,6 +1794,13 @@ export class InputHandler {
     return this.captureCoverage.getObservations(request);
   }
 
+  recordCaptureCoverageDirectMutation(
+    category: CaptureCoverageOperationCategory,
+    sourceHook: string,
+  ): void {
+    this.captureCoverage.recordDirectMutation({ category, sourceHook });
+  }
+
   /** Backspace 처리 */
   private handleBackspace(pos: DocumentPosition, inCell: boolean): void {
     _text.handleBackspace.call(this, pos, inCell);
@@ -3204,6 +3215,7 @@ export class InputHandler {
       row.addEventListener('mousedown', (e) => {
         e.preventDefault();
         this.wasm.setFormValue(sec, para, ci, JSON.stringify({ text: item }));
+        this.recordCaptureCoverageDirectMutation('field_value_replace', 'wasm_set_form_value_combo');
         this.removeFormOverlay();
         this.afterEdit();
       });
@@ -3246,6 +3258,7 @@ export class InputHandler {
 
     const commit = () => {
       this.wasm.setFormValue(sec, para, ci, JSON.stringify({ text: input.value }));
+      this.recordCaptureCoverageDirectMutation('field_value_replace', 'wasm_set_form_value_edit');
       this.removeFormOverlay();
       this.afterEdit();
     };
