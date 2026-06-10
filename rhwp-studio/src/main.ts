@@ -62,6 +62,13 @@ type FormattingFingerprintParams = {
   includeLayerTree?: boolean;
 };
 
+type DeterministicEditParams = {
+  text?: unknown;
+  sectionIndex?: unknown;
+  paragraphIndex?: unknown;
+  charOffset?: unknown;
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -241,6 +248,55 @@ function buildFormattingFingerprint(params?: FormattingFingerprintParams): Recor
     sections,
     pages,
     unsupported,
+  };
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(Math.trunc(numeric), max));
+}
+
+function deterministicEditText(params?: DeterministicEditParams): string {
+  const text = typeof params?.text === 'string' ? params.text : 'edited-visible-proof';
+  const normalized = text.trim();
+  if (!normalized) {
+    throw new Error('deterministic edit text is empty');
+  }
+  if (normalized.length > 128) {
+    throw new Error('deterministic edit text is too long');
+  }
+  return normalized;
+}
+
+function applyDeterministicEdit(params?: DeterministicEditParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const paragraphIndex = boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+  const charOffset = boundedInteger(params?.charOffset, 0, 0, paragraphLength);
+  const text = deterministicEditText(params);
+  const rawResult = wasm.insertText(sectionIndex, paragraphIndex, charOffset, text);
+
+  eventBus.emit('document-mutated', 'deterministic-edit-rpc');
+  eventBus.emit('document-changed', 'deterministic-edit-rpc');
+
+  return {
+    changed: true,
+    operation: 'insertText',
+    runtimeIdentity,
+    source: 'runtime_rpc',
+    text,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset,
+    },
+    result: rawResult,
   };
 }
 
@@ -1125,6 +1181,10 @@ window.addEventListener('message', async (e) => {
       case 'getFormattingFingerprint':
         await initPromise;
         reply(buildFormattingFingerprint(params));
+        break;
+      case 'applyDeterministicEdit':
+        await initPromise;
+        reply(applyDeterministicEdit(params));
         break;
       case 'loadFile': {
         await initPromise;
