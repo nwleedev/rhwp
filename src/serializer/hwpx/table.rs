@@ -209,6 +209,7 @@ fn write_sz<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Serial
 
 fn write_pos<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), SerializeError> {
     let treat = bool01(c.treat_as_char);
+    let flow = bool01(c.flow_with_text);
     let vert_offset = c.vertical_offset.to_string();
     let horz_offset = c.horizontal_offset.to_string();
     empty_tag(
@@ -217,7 +218,7 @@ fn write_pos<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Seria
         &[
             ("treatAsChar", treat),
             ("affectLSpacing", "0"),
-            ("flowWithText", "1"),
+            ("flowWithText", flow),
             ("allowOverlap", "0"),
             ("holdAnchorAndSO", "0"),
             ("vertRelTo", vert_rel_to_str(c.vert_rel_to)),
@@ -702,6 +703,21 @@ mod tests {
         t.common.text_flow = TextFlow::LargestOnly;
         let xml = serialize(&t);
         assert!(xml.contains(r#"textFlow="LARGEST_ONLY""#), "{}", xml);
+    }
+
+    #[test]
+    fn table_pos_preserves_flow_with_text_false() {
+        let mut t = empty_table(1, 1);
+        t.common.treat_as_char = true;
+        t.common.flow_with_text = false;
+
+        let xml = serialize(&t);
+
+        assert!(
+            xml.contains(r#"<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="0""#),
+            "table pos must preserve source flowWithText=0: {}",
+            xml
+        );
     }
 
     #[test]
