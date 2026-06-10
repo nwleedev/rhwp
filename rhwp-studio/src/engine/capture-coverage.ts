@@ -39,6 +39,29 @@ export interface DirectMutationCoverageDescriptor {
 }
 
 const textCommandTypes = new Set(['insertText', 'deleteText']);
+const complexPasteOperationTypes = new Set([
+  'pasteControl',
+  'pasteHtml',
+  'pasteImage',
+  'pasteInternal',
+]);
+const objectMutationOperationTypes = new Set([
+  'cutObject',
+  'cutTable',
+  'deleteObject',
+  'deleteTable',
+  'deleteTableColumn',
+  'deleteTableRow',
+  'insertTableColumn',
+  'insertTableRow',
+  'mergeTableCells',
+  'resizeCellByKeyboard',
+  'resizeTableCells',
+  'resizeTableProportional',
+  'splitTableCell',
+  'toggleTableCaption',
+]);
+const pageSettingOperationTypes = new Set(['columnBreak', 'pageBreak']);
 
 function isTableCellPosition(position: Partial<DocumentPosition> | undefined): boolean {
   if (!position) return false;
@@ -54,6 +77,22 @@ function getOperationCategory(command: EditCommand): CaptureCoverageOperationCat
   if (!textCommandTypes.has(command.type)) return null;
 
   return isTableCellPosition(getCommandPosition(command)) ? 'table_cell_text_replace' : 'body_text_replace';
+}
+
+function getUnsupportedSnapshotCategory(desc: OperationDescriptor): CaptureCoverageOperationCategory | null {
+  if (desc.kind !== 'snapshot') return null;
+
+  if (desc.meta?.domain === 'page' || pageSettingOperationTypes.has(desc.operationType)) {
+    return 'page_setting_mutation';
+  }
+  if (desc.meta?.domain === 'object' || desc.meta?.domain === 'table' || objectMutationOperationTypes.has(desc.operationType)) {
+    return 'object_mutation';
+  }
+  if (complexPasteOperationTypes.has(desc.operationType)) {
+    return 'complex_paste';
+  }
+
+  return null;
 }
 
 /**
@@ -72,6 +111,22 @@ export class CaptureCoverageCollector {
   }
 
   recordOperation(desc: OperationDescriptor): void {
+    if (desc.kind === 'snapshot') {
+      const category = getUnsupportedSnapshotCategory(desc);
+      if (!category) return;
+
+      this.observations.push({
+        category,
+        evidenceIds: [`runtime-unsupported-${this.nextEvidenceId++}`],
+        manifestOperationCount: 0,
+        sourceHook: `snapshot_${desc.operationType}`,
+        surface: 'command_dispatcher',
+        unsupportedMutations: [desc.operationType],
+        verdict: 'unsupported',
+      });
+      return;
+    }
+
     if (desc.kind !== 'command' && desc.kind !== 'record') return;
 
     const category = getOperationCategory(desc.command);
