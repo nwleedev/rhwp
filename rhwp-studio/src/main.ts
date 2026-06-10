@@ -277,8 +277,10 @@ function applyDeterministicEdit(params?: DeterministicEditParams): Record<string
   const sectionCount = wasm.getSectionCount();
   const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
   const paragraphIndex = boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
-  const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
-  const charOffset = boundedInteger(params?.charOffset, 0, 0, paragraphLength);
+  const paragraphLength = params?.charOffset == null ? null : wasm.getParagraphLength(sectionIndex, paragraphIndex);
+  const charOffset = paragraphLength == null
+    ? 0
+    : boundedInteger(params?.charOffset, 0, 0, paragraphLength);
   const text = deterministicEditText(params);
   const rawResult = wasm.insertText(sectionIndex, paragraphIndex, charOffset, text);
 
