@@ -18,7 +18,8 @@ use quick_xml::Writer;
 use crate::model::document::{DocInfo, DocProperties, Document};
 use crate::model::style::{
     Alignment, BorderFill, BorderLine, BorderLineType, CharShape, DiagonalLine, FillType, Font,
-    HeadType, LineSpacingType, Numbering, ParaShape, Style, TabDef,
+    GradientFill, HeadType, LineSpacingType, Numbering, NumberingHead, ParaShape, SolidFill, Style,
+    TabDef,
 };
 use crate::model::ColorRef;
 
@@ -139,16 +140,20 @@ fn write_fontfaces<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<()
             &[("lang", lang), ("fontCnt", &fonts.len().to_string())],
         )?;
         for (id, font) in fonts.iter().enumerate() {
-            empty_tag(
-                w,
-                "hh:font",
-                &[
-                    ("id", &id.to_string()),
-                    ("face", &font.name),
-                    ("type", font_type_str(font.alt_type)),
-                    ("isEmbedded", "0"),
-                ],
-            )?;
+            let id_s = id.to_string();
+            let attrs = [
+                ("id", id_s.as_str()),
+                ("face", font.name.as_str()),
+                ("type", font_type_str(font.alt_type)),
+                ("isEmbedded", "0"),
+            ];
+            if let Some(type_info) = font.type_info {
+                start_tag_attrs(w, "hh:font", &attrs)?;
+                write_font_type_info(w, type_info)?;
+                end_tag(w, "hh:font")?;
+            } else {
+                empty_tag(w, "hh:font", &attrs)?;
+            }
         }
         end_tag(w, "hh:fontface")?;
     }
@@ -157,6 +162,40 @@ fn write_fontfaces<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<()
 }
 
 static EMPTY_FONT_VEC: Vec<Font> = Vec::new();
+
+fn write_font_type_info<W: Write>(
+    w: &mut Writer<W>,
+    type_info: [u8; 10],
+) -> Result<(), SerializeError> {
+    empty_tag(
+        w,
+        "hh:typeInfo",
+        &[
+            ("familyType", font_family_type_str(type_info[0])),
+            ("weight", &type_info[2].to_string()),
+            ("proportion", &type_info[3].to_string()),
+            ("contrast", &type_info[4].to_string()),
+            ("strokeVariation", &type_info[5].to_string()),
+            ("armStyle", &type_info[6].to_string()),
+            ("letterform", &type_info[7].to_string()),
+            ("midline", &type_info[8].to_string()),
+            ("xHeight", &type_info[9].to_string()),
+        ],
+    )
+}
+
+fn font_family_type_str(value: u8) -> &'static str {
+    match value {
+        1 => "FCAT_MYUNGJO",
+        2 => "FCAT_GOTHIC",
+        3 => "FCAT_SSERIF",
+        4 => "FCAT_BRUSHSCRIPT",
+        5 => "FCAT_DECORATIVE",
+        6 => "FCAT_NONRECTMJ",
+        7 => "FCAT_NONRECTGT",
+        _ => "FCAT_UNKNOWN",
+    }
+}
 
 fn font_type_str(alt_type: u8) -> &'static str {
     match alt_type {
@@ -231,13 +270,98 @@ fn write_border_fill<W: Write>(
     // fillBrush: Fill이 존재할 때만
     if !matches!(bf.fill.fill_type, FillType::None) {
         start_tag(w, "hc:fillBrush")?;
-        // Stage 1에서는 Fill 내부를 완전 직렬화하지 않고 빈 래퍼만 출력.
-        // (한컴 관찰: ref_empty의 borderFill id=2 에 빈 fillBrush 존재)
+        if matches!(bf.fill.fill_type, FillType::Solid) {
+            if let Some(solid) = bf.fill.solid {
+                write_solid_fill(w, &solid, bf.fill.alpha)?;
+            }
+        } else if matches!(bf.fill.fill_type, FillType::Gradient) {
+            if let Some(gradient) = bf.fill.gradient.as_ref() {
+                write_gradient_fill(w, gradient, bf.fill.alpha)?;
+            }
+        }
         end_tag(w, "hc:fillBrush")?;
     }
 
     end_tag(w, "hh:borderFill")?;
     Ok(())
+}
+
+fn write_solid_fill<W: Write>(
+    w: &mut Writer<W>,
+    solid: &SolidFill,
+    alpha: u8,
+) -> Result<(), SerializeError> {
+    let face_color = color_hex(solid.background_color);
+    let hatch_color = color_hex(solid.pattern_color);
+    let alpha_s;
+
+    let mut attrs = vec![
+        ("faceColor", face_color.as_str()),
+        ("hatchColor", hatch_color.as_str()),
+    ];
+    if solid.pattern_type >= 0 {
+        attrs.push(("hatchStyle", hatch_style_str(solid.pattern_type)));
+    }
+    if alpha != 0 {
+        alpha_s = format!("{:.3}", f64::from(alpha) / 255.0);
+        attrs.push(("alpha", alpha_s.as_str()));
+    }
+
+    empty_tag(w, "hc:winBrush", &attrs)
+}
+
+fn hatch_style_str(pattern_type: i32) -> &'static str {
+    match pattern_type {
+        1 => "HORIZONTAL",
+        2 => "VERTICAL",
+        3 => "BACK_SLASH",
+        4 => "SLASH",
+        5 => "CROSS",
+        6 => "CROSS_DIAGONAL",
+        _ => "HORIZONTAL",
+    }
+}
+
+fn write_gradient_fill<W: Write>(
+    w: &mut Writer<W>,
+    gradient: &GradientFill,
+    alpha: u8,
+) -> Result<(), SerializeError> {
+    let angle = gradient.angle.to_string();
+    let center_x = gradient.center_x.to_string();
+    let center_y = gradient.center_y.to_string();
+    let blur = gradient.blur.to_string();
+    let step_center = gradient.step_center.to_string();
+    let alpha_s;
+    let mut attrs = vec![
+        ("type", gradient_type_str(gradient.gradient_type)),
+        ("angle", angle.as_str()),
+        ("centerX", center_x.as_str()),
+        ("centerY", center_y.as_str()),
+        ("blur", blur.as_str()),
+        ("stepCenter", step_center.as_str()),
+    ];
+    if alpha != 0 {
+        alpha_s = format!("{:.3}", f64::from(alpha) / 255.0);
+        attrs.push(("alpha", alpha_s.as_str()));
+    }
+
+    start_tag_attrs(w, "hc:gradation", &attrs)?;
+    for color in &gradient.colors {
+        let value = color_hex(*color);
+        empty_tag(w, "hc:color", &[("value", value.as_str())])?;
+    }
+    end_tag(w, "hc:gradation")
+}
+
+fn gradient_type_str(value: i16) -> &'static str {
+    match value {
+        1 => "LINEAR",
+        2 => "RADIAL",
+        3 => "CONICAL",
+        4 => "SQUARE",
+        _ => "LINEAR",
+    }
 }
 
 fn write_diag_line<W: Write>(
@@ -278,7 +402,15 @@ fn write_border_line<W: Write>(
 }
 
 fn write_diagonal<W: Write>(w: &mut Writer<W>, d: &DiagonalLine) -> Result<(), SerializeError> {
-    let type_str = if d.width == 0 { "NONE" } else { "SOLID" };
+    let type_str = if d.width == 0 {
+        "NONE"
+    } else {
+        diagonal_line_type_str(d.diagonal_type)
+    };
+    if d.width == 0 {
+        return empty_tag(w, "hh:diagonal", &[("type", type_str)]);
+    }
+
     let width_mm = format!("{} mm", border_width_mm(d.width));
     let color = color_hex(d.color);
     empty_tag(
@@ -286,6 +418,26 @@ fn write_diagonal<W: Write>(w: &mut Writer<W>, d: &DiagonalLine) -> Result<(), S
         "hh:diagonal",
         &[("type", type_str), ("width", &width_mm), ("color", &color)],
     )
+}
+
+fn diagonal_line_type_str(value: u8) -> &'static str {
+    match value {
+        0 => "NONE",
+        1 => "SOLID",
+        2 => "DASH",
+        3 => "DOT",
+        4 => "DASH_DOT",
+        5 => "DASH_DOT_DOT",
+        6 => "LONG_DASH",
+        7 => "CIRCLE",
+        8 => "DOUBLE_SLIM",
+        9 => "SLIM_THICK",
+        10 => "THICK_SLIM",
+        11 => "SLIM_THICK_SLIM",
+        12 => "WAVE",
+        13 => "DOUBLE_WAVE",
+        _ => "SOLID",
+    }
 }
 
 fn border_line_type_str(t: BorderLineType) -> &'static str {
@@ -421,7 +573,10 @@ fn write_char_pr<W: Write>(
     if cs.bold {
         empty_tag(w, "hh:bold", &[])?;
     }
-    if !matches!(cs.underline_type, crate::model::style::UnderlineType::None) {
+    if !matches!(cs.underline_type, crate::model::style::UnderlineType::None)
+        || cs.underline_color != 0
+        || cs.underline_shape != 0
+    {
         empty_tag(
             w,
             "hh:underline",
@@ -432,12 +587,12 @@ fn write_char_pr<W: Write>(
             ],
         )?;
     }
-    if cs.strikethrough {
+    if cs.strikethrough || cs.strike_color != 0 || cs.strike_shape != 0 {
         empty_tag(
             w,
             "hh:strikeout",
             &[
-                ("shape", line_shape_str(cs.strike_shape)),
+                ("shape", strike_shape_str(cs)),
                 ("color", &color_hex(cs.strike_color)),
             ],
         )?;
@@ -564,6 +719,14 @@ fn line_shape_str(s: u8) -> &'static str {
         11 => "WAVE",
         12 => "DOUBLE_WAVE",
         _ => "SOLID",
+    }
+}
+
+fn strike_shape_str(cs: &CharShape) -> &'static str {
+    if cs.strikethrough {
+        line_shape_str(cs.strike_shape)
+    } else {
+        "NONE"
     }
 }
 
@@ -698,26 +861,45 @@ fn write_numbering<W: Write>(
         let level_s = (level + 1).to_string();
         let start_s = start.to_string();
         let wa = h.width_adjust.to_string();
-        empty_tag(
-            w,
-            "hh:paraHead",
-            &[
-                ("start", &start_s),
-                ("level", &level_s),
-                ("align", "LEFT"),
-                ("useInstWidth", "1"),
-                ("autoIndent", "1"),
-                ("widthAdjust", &wa),
-                ("textOffsetType", "PERCENT"),
-                ("textOffset", "50"),
-                ("numFormat", "DIGIT"),
-                ("charPrIDRef", &u32::MAX.to_string()),
-                ("checkable", "0"),
-            ],
-        )?;
+        let text_offset = h.text_distance.to_string();
+        let char_pr_id = h.char_shape_id.to_string();
+        let format_text = n.level_formats.get(idx).map(String::as_str).unwrap_or("");
+        let num_format = numbering_format_str(h.number_format);
+        let mut attrs = vec![
+            ("start", start_s.as_str()),
+            ("level", level_s.as_str()),
+            ("align", "LEFT"),
+            ("useInstWidth", "1"),
+            ("autoIndent", "1"),
+            ("widthAdjust", wa.as_str()),
+            ("textOffsetType", "PERCENT"),
+            ("textOffset", text_offset.as_str()),
+            ("numFormat", num_format),
+            ("charPrIDRef", char_pr_id.as_str()),
+            ("checkable", "0"),
+        ];
+        if !format_text.is_empty() {
+            attrs.push(("text", format_text));
+        }
+        empty_tag(w, "hh:paraHead", &attrs)?;
     }
     end_tag(w, "hh:numbering")?;
     Ok(())
+}
+
+fn numbering_format_str(value: u8) -> &'static str {
+    match value {
+        0 => "DIGIT",
+        1 => "CIRCLED_DIGIT",
+        2 => "ROMAN_CAPITAL",
+        3 => "ROMAN_SMALL",
+        4 => "LATIN_CAPITAL",
+        5 => "LATIN_SMALL",
+        8 => "HANGUL_SYLLABLE",
+        12 => "HANGUL_NUMBER",
+        13 => "HANJA_NUMBER",
+        _ => "DIGIT",
+    }
 }
 
 // =====================================================================
@@ -787,7 +969,7 @@ fn write_para_pr<W: Write>(
         "hh:align",
         &[
             ("horizontal", alignment_str(ps.alignment)),
-            ("vertical", "BASELINE"),
+            ("vertical", vertical_alignment_str((ps.attr1 >> 20) & 0x03)),
         ],
     )?;
     empty_tag(
@@ -847,8 +1029,8 @@ fn write_para_pr<W: Write>(
             ("offsetRight", &ps.border_spacing[1].to_string()),
             ("offsetTop", &ps.border_spacing[2].to_string()),
             ("offsetBottom", &ps.border_spacing[3].to_string()),
-            ("connect", "0"),
-            ("ignoreMargin", "0"),
+            ("connect", bool_attr(ps.attr1 & (1 << 28) != 0)),
+            ("ignoreMargin", bool_attr(ps.attr1 & (1 << 29) != 0)),
         ],
     )?;
 
@@ -901,6 +1083,15 @@ fn alignment_str(a: Alignment) -> &'static str {
         Center => "CENTER",
         Distribute => "DISTRIBUTE",
         Split => "DISTRIBUTE_SPACE",
+    }
+}
+
+fn vertical_alignment_str(value: u32) -> &'static str {
+    match value & 0x03 {
+        1 => "TOP",
+        2 => "CENTER",
+        3 => "BOTTOM",
+        _ => "BASELINE",
     }
 }
 
@@ -1004,6 +1195,7 @@ use super::utils::start_tag;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::hwpx::header::parse_hwpx_header;
     use crate::parser::hwpx::parse_hwpx;
 
     #[test]
@@ -1290,6 +1482,225 @@ mod tests {
             xml.contains(r#"<hh:backSlash type="CENTER_BELOW" Crooked="0" isCounter="0"/>"#),
             "backSlash 방향 비트가 CENTER_BELOW로 보존되어야 함: {xml}"
         );
+    }
+
+    #[test]
+    fn write_header_preserves_font_type_info() {
+        let mut doc = Document::default();
+        doc.doc_info.font_faces = vec![
+            vec![Font {
+                name: "TestFont".to_string(),
+                alt_type: 1,
+                type_info: Some([2, 0, 5, 3, 2, 0, 0, 2, 0, 4]),
+                ..Font::default()
+            }],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        assert_eq!(
+            doc_info.font_faces[0][0].type_info,
+            Some([2, 0, 5, 3, 2, 0, 0, 2, 0, 4])
+        );
+    }
+
+    #[test]
+    fn write_header_preserves_solid_border_fill() {
+        let mut bf = BorderFill::default();
+        bf.fill.fill_type = FillType::Solid;
+        bf.fill.solid = Some(SolidFill {
+            background_color: 0x00F2F2F2,
+            pattern_color: 0xFFFFFFFF,
+            pattern_type: 1,
+        });
+
+        let mut doc = Document::default();
+        doc.doc_info.border_fills = vec![bf];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        let actual = doc_info.border_fills[0].fill.solid.expect("solid fill");
+        assert_eq!(doc_info.border_fills[0].fill.fill_type, FillType::Solid);
+        assert_eq!(actual.background_color, 0x00F2F2F2);
+        assert_eq!(actual.pattern_color, 0xFFFFFFFF);
+        assert_eq!(actual.pattern_type, 1);
+    }
+
+    #[test]
+    fn write_header_preserves_solid_hatch_color_without_hatch_style() {
+        let mut bf = BorderFill::default();
+        bf.fill.fill_type = FillType::Solid;
+        bf.fill.solid = Some(SolidFill {
+            background_color: 0x00D3F1E1,
+            pattern_color: 0x00999999,
+            pattern_type: -1,
+        });
+
+        let mut doc = Document::default();
+        doc.doc_info.border_fills = vec![bf];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        let actual = doc_info.border_fills[0].fill.solid.expect("solid fill");
+        assert_eq!(actual.background_color, 0x00D3F1E1);
+        assert_eq!(actual.pattern_color, 0x00999999);
+        assert_eq!(actual.pattern_type, -1);
+    }
+
+    #[test]
+    fn write_header_preserves_empty_diagonal_width() {
+        let mut bf = BorderFill::default();
+        bf.diagonal.width = 0;
+
+        let mut doc = Document::default();
+        doc.doc_info.border_fills = vec![bf];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        assert_eq!(doc_info.border_fills[0].diagonal.width, 0);
+    }
+
+    #[test]
+    fn write_header_preserves_diagonal_line_type() {
+        let mut bf = BorderFill::default();
+        bf.diagonal.diagonal_type = 8;
+        bf.diagonal.width = 6;
+
+        let mut doc = Document::default();
+        doc.doc_info.border_fills = vec![bf];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        assert_eq!(doc_info.border_fills[0].diagonal.diagonal_type, 8);
+        assert_eq!(doc_info.border_fills[0].diagonal.width, 6);
+    }
+
+    #[test]
+    fn write_header_preserves_gradient_border_fill() {
+        let mut bf = BorderFill::default();
+        bf.fill.fill_type = FillType::Gradient;
+        bf.fill.gradient = Some(GradientFill {
+            gradient_type: 1,
+            angle: 90,
+            center_x: 0,
+            center_y: 0,
+            blur: 255,
+            step_center: 50,
+            colors: vec![0x00235CE3, 0x0049F279],
+            positions: vec![],
+        });
+
+        let mut doc = Document::default();
+        doc.doc_info.border_fills = vec![bf];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        let actual = doc_info.border_fills[0]
+            .fill
+            .gradient
+            .as_ref()
+            .expect("gradient fill");
+        assert_eq!(doc_info.border_fills[0].fill.fill_type, FillType::Gradient);
+        assert_eq!(actual.gradient_type, 1);
+        assert_eq!(actual.angle, 90);
+        assert_eq!(actual.blur, 255);
+        assert_eq!(actual.step_center, 50);
+        assert_eq!(actual.colors, vec![0x00235CE3, 0x0049F279]);
+    }
+
+    #[test]
+    fn write_header_preserves_inactive_underline_and_strikeout_colors() {
+        let mut doc = Document::default();
+        doc.doc_info.char_shapes = vec![CharShape {
+            underline_type: crate::model::style::UnderlineType::None,
+            underline_color: 0x00FF0000,
+            strikethrough: false,
+            strike_color: 0x000000FF,
+            ..CharShape::default()
+        }];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+        let actual = &doc_info.char_shapes[0];
+
+        assert_eq!(
+            actual.underline_type,
+            crate::model::style::UnderlineType::None
+        );
+        assert_eq!(actual.underline_color, 0x00FF0000);
+        assert!(!actual.strikethrough);
+        assert_eq!(actual.strike_color, 0x000000FF);
+    }
+
+    #[test]
+    fn write_header_preserves_para_border_flags() {
+        let mut doc = Document::default();
+        doc.doc_info.para_shapes = vec![ParaShape {
+            attr1: (1 << 28) | (1 << 29),
+            ..ParaShape::default()
+        }];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 28), 1 << 28);
+        assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 29), 1 << 29);
+    }
+
+    #[test]
+    fn write_header_preserves_para_vertical_alignment_bits() {
+        let mut doc = Document::default();
+        doc.doc_info.para_shapes = vec![ParaShape {
+            attr1: 2 << 20,
+            ..ParaShape::default()
+        }];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+
+        assert_eq!((doc_info.para_shapes[0].attr1 >> 20) & 0x03, 2);
+    }
+
+    #[test]
+    fn write_header_preserves_numbering_head_fields() {
+        let mut numbering = Numbering::default();
+        numbering.start_number = 0;
+        numbering.level_start_numbers[0] = 3;
+        numbering.level_formats[0] = "^1.".to_string();
+        numbering.heads[0] = NumberingHead {
+            width_adjust: 800,
+            text_distance: 35,
+            char_shape_id: 20,
+            number_format: 8,
+            ..NumberingHead::default()
+        };
+
+        let mut doc = Document::default();
+        doc.doc_info.numberings = vec![numbering];
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        let (doc_info, _) = parse_hwpx_header(&xml).expect("parse serialized header");
+        let actual = &doc_info.numberings[0];
+
+        assert_eq!(actual.start_number, 0);
+        assert_eq!(actual.level_start_numbers[0], 3);
+        assert_eq!(actual.level_formats[0], "^1.");
+        assert_eq!(actual.heads[0].width_adjust, 800);
+        assert_eq!(actual.heads[0].text_distance, 35);
+        assert_eq!(actual.heads[0].char_shape_id, 20);
+        assert_eq!(actual.heads[0].number_format, 8);
     }
 
     #[test]
