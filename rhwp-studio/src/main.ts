@@ -70,6 +70,8 @@ type DeterministicEditParams = {
   charOffset?: unknown;
 };
 
+type UndoRedoCaptureProofParams = DeterministicEditParams;
+
 type TableCellTextTarget = {
   cellIndex: number;
   cellParaIndex: number;
@@ -377,6 +379,124 @@ function applyDeterministicEdit(params?: DeterministicEditParams): Record<string
       paragraphIndex,
       charOffset,
     },
+  };
+}
+
+function runtimeProofHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `runtime-proof-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function runUndoRedoCaptureProof(params?: UndoRedoCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const charOffset = params?.charOffset == null
+    ? currentPosition.charOffset
+    : boundedInteger(params?.charOffset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const text = deterministicEditText({ ...params, text: params?.text ?? 'undo-redo-proof' });
+  const operationId = `runtime-undo-redo-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+  };
+
+  inputHandler.executeOperation({
+    kind: 'command',
+    command: new InsertTextCommand(position, text),
+    meta: {
+      actionId: 'undo-redo-capture-proof-rpc',
+      domain: 'text',
+      refresh: 'full',
+      dirtyScope: 'document',
+      selection: 'moveToResult',
+    },
+  });
+
+  const canUndoAfterOperation = inputHandler.canUndo();
+  if (!canUndoAfterOperation) {
+    throw new Error('undo-redo proof could not observe undo availability after operation');
+  }
+
+  inputHandler.performUndo();
+  const canRedoAfterUndo = inputHandler.canRedo();
+  if (!canRedoAfterUndo) {
+    throw new Error('undo-redo proof could not observe redo availability after undo');
+  }
+
+  inputHandler.performRedo();
+
+  return {
+    ok: true,
+    operationId,
+    text,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset,
+    },
+    events: [
+      {
+        eventId: `${operationId}-operation`,
+        kind: 'operation',
+        operation: {
+          baseDocumentSha256: 'runtime-proof-base-unavailable',
+          coverage: {
+            unsupportedMutations: [],
+            verdict: 'supported_candidate',
+          },
+          kind: 'body_text_replace',
+          locator: {
+            entryName: `Contents/section${sectionIndex}.xml`,
+            expectedText: '',
+          },
+          manifestSchemaVersion: 1,
+          operationId,
+          payload: {
+            payloadSha256: runtimeProofHash(text),
+            replacementText: text,
+          },
+          runtimeIdentity,
+          sourceHook: 'execute_operation_command',
+        },
+      },
+      {
+        eventId: `${operationId}-undo`,
+        kind: 'undo',
+        operationId,
+      },
+      {
+        eventId: `${operationId}-redo`,
+        kind: 'redo',
+        operationId,
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['body_text_replace'],
+    }),
+    canUndoAfterOperation,
+    canRedoAfterUndo,
+    canUndoAfterRedo: inputHandler.canUndo(),
+    canRedoAfterRedo: inputHandler.canRedo(),
+    runtimeIdentity,
   };
 }
 
@@ -1842,6 +1962,10 @@ window.addEventListener('message', async (e) => {
       case 'getCaptureCoverageObservations':
         await initPromise;
         reply({ observations: inputHandler?.getCaptureCoverageObservations(params ?? {}) ?? [] });
+        break;
+      case 'runUndoRedoCaptureProof':
+        await initPromise;
+        reply(runUndoRedoCaptureProof(params));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);
