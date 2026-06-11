@@ -413,13 +413,23 @@ function getFootnoteTextTargets(): FootnoteTextTarget[] {
 
   for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
     for (let footnoteIndex = 0; footnoteIndex < 256; footnoteIndex += 1) {
-      const pageFootnote = wasm.getPageFootnoteInfo(pageIndex, footnoteIndex);
+      let pageFootnote;
+      try {
+        pageFootnote = wasm.getPageFootnoteInfo(pageIndex, footnoteIndex);
+      } catch {
+        break;
+      }
       if (!pageFootnote?.ok) break;
 
       const sectionIndex = pageFootnote.sectionIdx;
       const parentParaIndex = pageFootnote.paraIdx;
       const controlIndex = pageFootnote.controlIdx;
-      const info = wasm.getFootnoteInfo(sectionIndex, parentParaIndex, controlIndex);
+      let info;
+      try {
+        info = wasm.getFootnoteInfo(sectionIndex, parentParaIndex, controlIndex);
+      } catch {
+        continue;
+      }
       if (!info.ok) continue;
 
       for (let fnParaIndex = 0; fnParaIndex < info.texts.length; fnParaIndex += 1) {
