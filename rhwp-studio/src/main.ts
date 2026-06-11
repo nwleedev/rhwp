@@ -72,6 +72,7 @@ type DeterministicEditParams = {
 
 type UndoRedoCaptureProofParams = DeterministicEditParams;
 type RecordOnlyCaptureProofParams = DeterministicEditParams;
+type ImeCompositionCaptureProofParams = DeterministicEditParams;
 
 type TableCellTextTarget = {
   cellIndex: number;
@@ -570,6 +571,93 @@ function runRecordOnlyCaptureProof(params?: RecordOnlyCaptureProofParams): Recor
     }),
     canUndoAfterRecord: inputHandler.canUndo(),
     canRedoAfterRecord: inputHandler.canRedo(),
+    runtimeIdentity,
+  };
+}
+
+function runImeCompositionCaptureProof(params?: ImeCompositionCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const charOffset = params?.charOffset == null
+    ? currentPosition.charOffset
+    : boundedInteger(params?.charOffset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const text = deterministicEditText({ ...params, text: params?.text ?? 'ime-composition-proof' });
+  const operationId = `runtime-ime-composition-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+  };
+  if (!inputHandler.moveCursorTo(position)) {
+    throw new Error('IME composition proof target position is unavailable');
+  }
+  const proof = inputHandler.runImeCompositionCaptureProof(text);
+
+  return {
+    ok: true,
+    operationId,
+    text,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset,
+    },
+    afterPosition: {
+      sectionIndex: proof.afterPosition.sectionIndex,
+      paragraphIndex: proof.afterPosition.paragraphIndex,
+      charOffset: proof.afterPosition.charOffset,
+    },
+    insertedText: proof.insertedText,
+    events: [
+      {
+        eventId: `${operationId}-operation`,
+        kind: 'operation',
+        operation: {
+          baseDocumentSha256: 'runtime-proof-base-unavailable',
+          coverage: {
+            unsupportedMutations: [],
+            verdict: 'supported_candidate',
+          },
+          kind: 'body_text_replace',
+          locator: {
+            entryName: `Contents/section${sectionIndex}.xml`,
+            expectedText: '',
+          },
+          manifestSchemaVersion: 1,
+          operationId,
+          payload: {
+            payloadSha256: runtimeProofHash(proof.insertedText),
+            replacementText: proof.insertedText,
+          },
+          runtimeIdentity,
+          sourceHook: 'command_history_record',
+        },
+      },
+      {
+        eventId: `${operationId}-record-only`,
+        kind: 'record_only',
+        reason: 'IME composition raw mutation is already reflected in preview before command_history_record',
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['body_text_replace'],
+    }),
+    canUndoAfterComposition: inputHandler.canUndo(),
+    canRedoAfterComposition: inputHandler.canRedo(),
     runtimeIdentity,
   };
 }
@@ -2044,6 +2132,10 @@ window.addEventListener('message', async (e) => {
       case 'runRecordOnlyCaptureProof':
         await initPromise;
         reply(runRecordOnlyCaptureProof(params));
+        break;
+      case 'runImeCompositionCaptureProof':
+        await initPromise;
+        reply(runImeCompositionCaptureProof(params));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);

@@ -1794,6 +1794,33 @@ export class InputHandler {
     return this.captureCoverage.getObservations(request);
   }
 
+  runImeCompositionCaptureProof(text: string): {
+    afterPosition: DocumentPosition;
+    beforePosition: DocumentPosition;
+    insertedText: string;
+  } {
+    const beforePosition = this.cursor.getPosition();
+    const wasActive = this.active;
+    this.active = true;
+
+    try {
+      this.onCompositionStart();
+      this.textarea.value = text;
+      this.onInput();
+      this.onCompositionEnd();
+    } finally {
+      if (!wasActive) {
+        this.active = false;
+      }
+    }
+
+    return {
+      afterPosition: this.cursor.getPosition(),
+      beforePosition,
+      insertedText: this.getTextAt(beforePosition, text.length),
+    };
+  }
+
   recordCaptureCoverageDirectMutation(
     category: CaptureCoverageOperationCategory,
     sourceHook: string,
