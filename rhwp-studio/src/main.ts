@@ -116,11 +116,15 @@ type TableCellTextTarget = {
   cellParaIndex: number;
   charLength: number;
   col?: number;
+  colSpan?: number;
   controlIndex: number;
   pageIndex: number;
   parentParaIndex: number;
   row?: number;
+  rowSpan?: number;
   sectionIndex: number;
+  tableColCount?: number;
+  tableRowCount?: number;
   value: string;
 };
 
@@ -1414,11 +1418,15 @@ function getTableCellTextTargets(): TableCellTextTarget[] {
           cellParaIndex,
           charLength,
           col: Number.isInteger(Number(cell.col)) ? Number(cell.col) : undefined,
+          colSpan: Number.isInteger(Number(cell.colSpan)) ? Number(cell.colSpan) : undefined,
           controlIndex,
           pageIndex,
           parentParaIndex,
           row: Number.isInteger(Number(cell.row)) ? Number(cell.row) : undefined,
+          rowSpan: Number.isInteger(Number(cell.rowSpan)) ? Number(cell.rowSpan) : undefined,
           sectionIndex,
+          tableColCount: Number.isInteger(Number(control.colCount)) ? Number(control.colCount) : undefined,
+          tableRowCount: Number.isInteger(Number(control.rowCount)) ? Number(control.rowCount) : undefined,
           value,
         });
       }
