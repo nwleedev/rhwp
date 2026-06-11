@@ -181,7 +181,6 @@ function summarizeControls(layout: { controls?: unknown[] } | null | undefined):
 
 function summarizeLayerTree(layerTree: unknown): Record<string, unknown> {
   const counts = {
-    objects: 0,
     arrays: 0,
     ops: 0,
     byKind: {} as Record<string, number>,
@@ -198,7 +197,6 @@ function summarizeLayerTree(layerTree: unknown): Record<string, unknown> {
     }
     if (!value || typeof value !== 'object') return;
 
-    counts.objects += 1;
     const objectValue = value as Record<string, unknown>;
     incrementCounter(counts.byKind, objectValue.kind);
     incrementCounter(counts.byType, objectValue.type);
