@@ -77,6 +77,10 @@ type IosFallbackInputCaptureProofParams = DeterministicEditParams & {
   intermediateText?: unknown;
 };
 type ImagePasteCaptureProofParams = DeterministicEditParams;
+type ControlPasteCaptureProofParams = DeterministicEditParams & {
+  controlIndex?: unknown;
+  parentParaIndex?: unknown;
+};
 type InternalPasteCaptureProofParams = DeterministicEditParams & {
   copyLength?: unknown;
 };
@@ -84,6 +88,14 @@ type InternalPasteCaptureProofParams = DeterministicEditParams & {
 type BodyParagraphTarget = {
   paragraphIndex: number;
   paragraphLength: number;
+};
+
+type BodyControlTarget = {
+  controlIndex: number;
+  pageIndex: number;
+  parentParaIndex: number;
+  sectionIndex: number;
+  type: string;
 };
 
 type TableCellTextTarget = {
@@ -370,6 +382,55 @@ function resolveBodyParagraphTarget(
   }
 
   throw new Error('internal paste proof requires a non-empty body paragraph');
+}
+
+function resolveBodyControlTarget(params?: ControlPasteCaptureProofParams): BodyControlTarget {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  if (params?.sectionIndex != null || params?.parentParaIndex != null || params?.controlIndex != null) {
+    const sectionIndex = finiteIndex(params?.sectionIndex, 'sectionIndex');
+    const parentParaIndex = finiteIndex(params?.parentParaIndex, 'parentParaIndex');
+    const controlIndex = finiteIndex(params?.controlIndex, 'controlIndex');
+    return {
+      controlIndex,
+      pageIndex: -1,
+      parentParaIndex,
+      sectionIndex,
+      type: 'explicit',
+    };
+  }
+
+  const seen = new Set<string>();
+  for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+    const layout = wasm.getPageControlLayout(pageIndex);
+    const controls = Array.isArray(layout.controls)
+      ? layout.controls as unknown as Array<Record<string, unknown>>
+      : [];
+    for (const control of controls) {
+      if (control.type !== 'table') continue;
+
+      const sectionIndex = Number(control.secIdx);
+      const parentParaIndex = Number(control.paraIdx);
+      const controlIndex = Number(control.controlIdx);
+      if (![sectionIndex, parentParaIndex, controlIndex].every(Number.isInteger)) continue;
+
+      const key = `${sectionIndex}:${parentParaIndex}:${controlIndex}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      return {
+        controlIndex,
+        pageIndex,
+        parentParaIndex,
+        sectionIndex,
+        type: String(control.type),
+      };
+    }
+  }
+
+  throw new Error('control paste proof requires a body control target');
 }
 
 function applyDeterministicEdit(params?: DeterministicEditParams): Record<string, unknown> {
@@ -898,6 +959,100 @@ function runImagePasteCaptureProof(params?: ImagePasteCaptureProofParams): Recor
         kind: 'unsupported',
         mutation: 'pasteImage',
         sourceHook: 'snapshot_pasteImage',
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['complex_paste'],
+    }),
+    runtimeIdentity,
+  };
+}
+
+function runControlPasteCaptureProof(params?: ControlPasteCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const requestedSectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const controlTarget = resolveBodyControlTarget(params);
+  const pasteSectionIndex = params?.sectionIndex == null ? controlTarget.sectionIndex : requestedSectionIndex;
+  const { paragraphIndex, paragraphLength } = resolveBodyParagraphTarget(
+    pasteSectionIndex,
+    params?.paragraphIndex,
+    currentPosition.paragraphIndex,
+  );
+  const pasteOffset = params?.charOffset == null
+    ? paragraphLength
+    : boundedInteger(params?.charOffset, paragraphLength, 0, paragraphLength);
+  const operationId = `runtime-control-paste-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex: pasteSectionIndex,
+    paragraphIndex,
+    charOffset: pasteOffset,
+  };
+  const copiedText = wasm.copyControl(
+    controlTarget.sectionIndex,
+    controlTarget.parentParaIndex,
+    controlTarget.controlIndex,
+  );
+  if (!copiedText || !wasm.hasInternalClipboard() || !wasm.clipboardHasControl()) {
+    throw new Error('control paste proof could not prepare control clipboard');
+  }
+
+  let pasteResult: { ok: boolean; paraIdx?: number; controlIdx?: number } = { ok: false };
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'pasteControl',
+    operation: (bridge) => {
+      const result = bridge.pasteControl(pasteSectionIndex, paragraphIndex, pasteOffset);
+      pasteResult = JSON.parse(result);
+      if (pasteResult.ok) {
+        return {
+          sectionIndex: pasteSectionIndex,
+          paragraphIndex: (pasteResult.paraIdx ?? paragraphIndex) + 1,
+          charOffset: 0,
+        };
+      }
+      return position;
+    },
+    meta: {
+      actionId: 'control-paste-capture-proof-rpc',
+      domain: 'unknown',
+      refresh: 'full',
+      dirtyScope: 'document',
+    },
+  });
+
+  return {
+    ok: pasteResult.ok === true,
+    operation: 'pasteControl',
+    operationId,
+    copiedText,
+    source: controlTarget,
+    position: {
+      sectionIndex: pasteSectionIndex,
+      paragraphIndex,
+      charOffset: pasteOffset,
+    },
+    target: {
+      paraIdx: pasteResult.paraIdx,
+      controlIdx: pasteResult.controlIdx,
+    },
+    events: [
+      {
+        eventId: `${operationId}-unsupported`,
+        kind: 'unsupported',
+        mutation: 'pasteControl',
+        sourceHook: 'snapshot_pasteControl',
       },
     ],
     captureObservations: inputHandler.getCaptureCoverageObservations({
@@ -2481,6 +2636,10 @@ window.addEventListener('message', async (e) => {
       case 'runImagePasteCaptureProof':
         await initPromise;
         reply(runImagePasteCaptureProof(params));
+        break;
+      case 'runControlPasteCaptureProof':
+        await initPromise;
+        reply(runControlPasteCaptureProof(params));
         break;
       case 'runInternalPasteCaptureProof':
         await initPromise;
