@@ -855,6 +855,11 @@ export class WasmBridge {
     return JSON.parse(this.doc.getPageControlLayout(pageNum));
   }
 
+  getPageTextLayout(pageNum: number): { runs: Array<Record<string, unknown>> } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.getPageTextLayout(pageNum));
+  }
+
   getPictureProperties(sec: number, para: number, ci: number): import('./types').PictureProperties {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getPictureProperties(sec, para, ci));

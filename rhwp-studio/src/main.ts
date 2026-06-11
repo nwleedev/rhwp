@@ -1,5 +1,5 @@
 import { WasmBridge } from '@/core/wasm-bridge';
-import type { DocumentInfo } from '@/core/types';
+import type { CellPathEntry, DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
@@ -112,6 +112,7 @@ type PictureObjectTarget = BodyControlTarget & {
 };
 
 type TableCellTextTarget = {
+  cellPath?: CellPathEntry[];
   cellIndex: number;
   cellParaIndex: number;
   charLength: number;
@@ -129,6 +130,7 @@ type TableCellTextTarget = {
 };
 
 type TableCellTextParams = {
+  cellPath?: unknown;
   cellIndex?: unknown;
   cellParaIndex?: unknown;
   controlIndex?: unknown;
@@ -1314,6 +1316,29 @@ function finiteIndex(value: unknown, name: string): number {
   return numeric;
 }
 
+function normalizeCellPathEntry(value: unknown): CellPathEntry | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const record = value as Record<string, unknown>;
+  const controlIndex = Number(record.controlIndex);
+  const cellIndex = Number(record.cellIndex);
+  const cellParaIndex = Number(record.cellParaIndex);
+  if (![controlIndex, cellIndex, cellParaIndex].every((item) => Number.isInteger(item) && item >= 0)) {
+    return null;
+  }
+
+  return { controlIndex, cellIndex, cellParaIndex };
+}
+
+function normalizeCellPath(value: unknown): CellPathEntry[] | null {
+  if (!Array.isArray(value)) return null;
+
+  const entries = value.map(normalizeCellPathEntry);
+  if (entries.some((entry) => entry == null)) return null;
+
+  return entries as CellPathEntry[];
+}
+
 function getFootnoteTextTargets(): FootnoteTextTarget[] {
   if (!wasm.hasLoadedDocument()) {
     throw new Error('문서가 로드되지 않았습니다');
@@ -1363,6 +1388,7 @@ function getFootnoteTextTargets(): FootnoteTextTarget[] {
         });
       }
     }
+
   }
 
   return targets;
@@ -1431,6 +1457,55 @@ function getTableCellTextTargets(): TableCellTextTarget[] {
         });
       }
     }
+
+    const textLayout = wasm.getPageTextLayout(pageIndex);
+    const runs = Array.isArray(textLayout.runs)
+      ? textLayout.runs as Array<Record<string, unknown>>
+      : [];
+    for (const run of runs) {
+      const cellPath = normalizeCellPath(run.cellPath);
+      if (!cellPath || cellPath.length <= 1) continue;
+
+      const sectionIndex = Number(run.secIdx);
+      const parentParaIndex = Number(run.parentParaIdx);
+      if (![sectionIndex, parentParaIndex].every(Number.isInteger)) continue;
+
+      const outerCell = cellPath[0];
+      const innerCell = cellPath[cellPath.length - 1];
+      const controlIndex = outerCell.controlIndex;
+      const cellIndex = innerCell.cellIndex;
+      const cellParaIndex = innerCell.cellParaIndex;
+      const pathJson = JSON.stringify(cellPath);
+      const key = `${sectionIndex}:${parentParaIndex}:${pathJson}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      let paragraphCount = 0;
+      let charLength = 0;
+      let value = '';
+      try {
+        paragraphCount = wasm.getCellParagraphCountByPath(sectionIndex, parentParaIndex, pathJson);
+        if (paragraphCount <= 0) continue;
+        charLength = wasm.getCellParagraphLengthByPath(sectionIndex, parentParaIndex, pathJson);
+        value = charLength > 0
+          ? wasm.getTextInCellByPath(sectionIndex, parentParaIndex, pathJson, 0, charLength)
+          : '';
+      } catch {
+        continue;
+      }
+
+      targets.push({
+        cellPath,
+        cellIndex,
+        cellParaIndex,
+        charLength,
+        controlIndex,
+        pageIndex,
+        parentParaIndex,
+        sectionIndex,
+        value,
+      });
+    }
   }
 
   return targets;
@@ -1446,13 +1521,24 @@ function setTableCellText(params?: TableCellTextParams): Record<string, unknown>
 
   const sectionIndex = finiteIndex(params?.sectionIndex, 'sectionIndex');
   const parentParaIndex = finiteIndex(params?.parentParaIndex, 'parentParaIndex');
-  const controlIndex = finiteIndex(params?.controlIndex, 'controlIndex');
-  const cellIndex = finiteIndex(params?.cellIndex, 'cellIndex');
-  const cellParaIndex = params?.cellParaIndex == null ? 0 : finiteIndex(params.cellParaIndex, 'cellParaIndex');
+  const cellPath = params?.cellPath == null ? null : normalizeCellPath(params.cellPath);
+  if (params?.cellPath != null && (!cellPath || cellPath.length === 0)) {
+    throw new Error('cellPath must be a non-empty array of cell path entries.');
+  }
+  const pathJson = cellPath ? JSON.stringify(cellPath) : '';
+  const outerCell = cellPath?.[0];
+  const innerCell = cellPath?.[cellPath.length - 1];
+  const controlIndex = outerCell?.controlIndex ?? finiteIndex(params?.controlIndex, 'controlIndex');
+  const cellIndex = innerCell?.cellIndex ?? finiteIndex(params?.cellIndex, 'cellIndex');
+  const cellParaIndex = innerCell?.cellParaIndex ?? (params?.cellParaIndex == null ? 0 : finiteIndex(params.cellParaIndex, 'cellParaIndex'));
   const text = tableCellText(params);
-  const oldLength = wasm.getCellParagraphLength(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex);
+  const oldLength = cellPath
+    ? wasm.getCellParagraphLengthByPath(sectionIndex, parentParaIndex, pathJson)
+    : wasm.getCellParagraphLength(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex);
   const oldValue = oldLength > 0
-    ? wasm.getTextInCell(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex, 0, oldLength)
+    ? cellPath
+      ? wasm.getTextInCellByPath(sectionIndex, parentParaIndex, pathJson, 0, oldLength)
+      : wasm.getTextInCell(sectionIndex, parentParaIndex, controlIndex, cellIndex, cellParaIndex, 0, oldLength)
     : '';
   const position = {
     sectionIndex,
@@ -1462,6 +1548,7 @@ function setTableCellText(params?: TableCellTextParams): Record<string, unknown>
     controlIndex,
     cellIndex,
     cellParaIndex,
+    ...(cellPath ? { cellPath } : {}),
   };
 
   if (oldLength > 0) {
@@ -1501,6 +1588,7 @@ function setTableCellText(params?: TableCellTextParams): Record<string, unknown>
       controlIndex,
       cellIndex,
       cellParaIndex,
+      ...(cellPath ? { cellPath } : {}),
     },
   };
 }
