@@ -838,7 +838,7 @@ function runImagePasteCaptureProof(params?: ImagePasteCaptureProofParams): Recor
     },
     meta: {
       actionId: 'image-paste-capture-proof-rpc',
-      domain: 'object',
+      domain: 'unknown',
       refresh: 'full',
       dirtyScope: 'document',
     },
