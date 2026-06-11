@@ -101,6 +101,27 @@ type TableCellResizeParams = {
   widthDelta?: unknown;
 };
 
+type FootnoteTextTarget = {
+  charLength: number;
+  controlIndex: number;
+  footnoteIndex: number;
+  footnoteNumber: number;
+  fnParaIndex: number;
+  pageIndex: number;
+  parentParaIndex: number;
+  sectionIndex: number;
+  sourceType: string;
+  value: string;
+};
+
+type FootnoteTextParams = {
+  controlIndex?: unknown;
+  fnParaIndex?: unknown;
+  parentParaIndex?: unknown;
+  sectionIndex?: unknown;
+  text?: unknown;
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -363,12 +384,67 @@ function tableCellText(params?: TableCellTextParams): string {
   return text;
 }
 
+function footnoteProofText(params?: FootnoteTextParams): string {
+  const text = typeof params?.text === 'string' ? params.text : ' footnote-proof';
+  if (text.length === 0) {
+    throw new Error('footnote proof text is empty');
+  }
+  if (text.length > 128) {
+    throw new Error('footnote proof text is too long');
+  }
+  return text;
+}
+
 function finiteIndex(value: unknown, name: string): number {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric < 0) {
     throw new Error(`${name} must be a non-negative integer.`);
   }
   return numeric;
+}
+
+function getFootnoteTextTargets(): FootnoteTextTarget[] {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  const targets: FootnoteTextTarget[] = [];
+  const seen = new Set<string>();
+
+  for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+    for (let footnoteIndex = 0; footnoteIndex < 256; footnoteIndex += 1) {
+      const pageFootnote = wasm.getPageFootnoteInfo(pageIndex, footnoteIndex);
+      if (!pageFootnote?.ok) break;
+
+      const sectionIndex = pageFootnote.sectionIdx;
+      const parentParaIndex = pageFootnote.paraIdx;
+      const controlIndex = pageFootnote.controlIdx;
+      const info = wasm.getFootnoteInfo(sectionIndex, parentParaIndex, controlIndex);
+      if (!info.ok) continue;
+
+      for (let fnParaIndex = 0; fnParaIndex < info.texts.length; fnParaIndex += 1) {
+        const value = info.texts[fnParaIndex] ?? '';
+        const key = `${sectionIndex}:${parentParaIndex}:${controlIndex}:${fnParaIndex}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        targets.push({
+          charLength: value.length,
+          controlIndex,
+          footnoteIndex,
+          footnoteNumber: info.number,
+          fnParaIndex,
+          pageIndex,
+          parentParaIndex,
+          sectionIndex,
+          sourceType: pageFootnote.sourceType,
+          value,
+        });
+      }
+    }
+  }
+
+  return targets;
 }
 
 function getTableCellTextTargets(): TableCellTextTarget[] {
@@ -500,6 +576,53 @@ function setTableCellText(params?: TableCellTextParams): Record<string, unknown>
       controlIndex,
       cellIndex,
       cellParaIndex,
+    },
+  };
+}
+
+function setFootnoteTextForProof(params?: FootnoteTextParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  const sectionIndex = finiteIndex(params?.sectionIndex, 'sectionIndex');
+  const parentParaIndex = finiteIndex(params?.parentParaIndex, 'parentParaIndex');
+  const controlIndex = finiteIndex(params?.controlIndex, 'controlIndex');
+  const fnParaIndex = params?.fnParaIndex == null ? 0 : finiteIndex(params.fnParaIndex, 'fnParaIndex');
+  const text = footnoteProofText(params);
+  const info = wasm.getFootnoteInfo(sectionIndex, parentParaIndex, controlIndex);
+  if (!info.ok) {
+    throw new Error('footnote target is unavailable');
+  }
+  const oldValue = info.texts[fnParaIndex] ?? '';
+  const charOffset = oldValue.length;
+  const result = wasm.insertTextInFootnote(
+    sectionIndex,
+    parentParaIndex,
+    controlIndex,
+    fnParaIndex,
+    charOffset,
+    text,
+  );
+
+  if (result.ok === true) {
+    inputHandler.commitExternalDirectMutation('footnote_text_replace', 'wasm_insert_text_in_footnote');
+  }
+
+  return {
+    ok: result.ok === true,
+    operation: 'insertTextInFootnote',
+    oldValue,
+    newValue: `${oldValue}${text}`,
+    target: {
+      sectionIndex,
+      parentParaIndex,
+      controlIndex,
+      fnParaIndex,
+      charOffset,
     },
   };
 }
@@ -1523,6 +1646,14 @@ window.addEventListener('message', async (e) => {
       case 'setTableCellText':
         await initPromise;
         reply(setTableCellText(params));
+        break;
+      case 'getFootnoteTextTargets':
+        await initPromise;
+        reply(getFootnoteTextTargets());
+        break;
+      case 'setFootnoteTextForProof':
+        await initPromise;
+        reply(setFootnoteTextForProof(params));
         break;
       case 'resizeTableCellForProof':
         await initPromise;

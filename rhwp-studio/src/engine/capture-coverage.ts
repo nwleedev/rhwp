@@ -6,6 +6,7 @@ export type CaptureCoverageOperationCategory =
   | 'table_cell_text_replace'
   | 'header_footer_text_replace'
   | 'field_value_replace'
+  | 'footnote_text_replace'
   | 'complex_paste'
   | 'object_mutation'
   | 'page_setting_mutation';
