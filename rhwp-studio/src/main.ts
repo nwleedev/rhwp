@@ -81,6 +81,11 @@ type InternalPasteCaptureProofParams = DeterministicEditParams & {
   copyLength?: unknown;
 };
 
+type BodyParagraphTarget = {
+  paragraphIndex: number;
+  paragraphLength: number;
+};
+
 type TableCellTextTarget = {
   cellIndex: number;
   cellParaIndex: number;
@@ -338,6 +343,33 @@ function deterministicEditText(params?: DeterministicEditParams): string {
     throw new Error('deterministic edit text is too long');
   }
   return normalized;
+}
+
+function resolveBodyParagraphTarget(
+  sectionIndex: number,
+  requestedParagraphIndex: unknown,
+  fallbackParagraphIndex: number,
+): BodyParagraphTarget {
+  if (requestedParagraphIndex != null) {
+    const paragraphIndex = boundedInteger(requestedParagraphIndex, fallbackParagraphIndex, 0, Number.MAX_SAFE_INTEGER);
+    const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+    if (paragraphLength <= 0) {
+      throw new Error('internal paste proof requires a non-empty body paragraph');
+    }
+    return { paragraphIndex, paragraphLength };
+  }
+
+  const paragraphCount = wasm.getParagraphCount(sectionIndex);
+  const fallbackIndex = boundedInteger(fallbackParagraphIndex, 0, 0, Math.max(0, paragraphCount - 1));
+  for (let offset = 0; offset < paragraphCount; offset += 1) {
+    const paragraphIndex = (fallbackIndex + offset) % paragraphCount;
+    const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+    if (paragraphLength > 0) {
+      return { paragraphIndex, paragraphLength };
+    }
+  }
+
+  throw new Error('internal paste proof requires a non-empty body paragraph');
 }
 
 function applyDeterministicEdit(params?: DeterministicEditParams): Record<string, unknown> {
@@ -888,13 +920,11 @@ function runInternalPasteCaptureProof(params?: InternalPasteCaptureProofParams):
   const sectionCount = wasm.getSectionCount();
   const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
   const currentPosition = inputHandler.getCursorPosition();
-  const paragraphIndex = params?.paragraphIndex == null
-    ? currentPosition.paragraphIndex
-    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
-  const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
-  if (paragraphLength <= 0) {
-    throw new Error('internal paste proof requires a non-empty body paragraph');
-  }
+  const { paragraphIndex, paragraphLength } = resolveBodyParagraphTarget(
+    sectionIndex,
+    params?.paragraphIndex,
+    currentPosition.paragraphIndex,
+  );
 
   const requestedCopyLength = params?.copyLength == null
     ? 4
