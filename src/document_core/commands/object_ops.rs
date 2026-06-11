@@ -4185,7 +4185,13 @@ impl DocumentCore {
             paragraph
                 .controls
                 .insert(insert_idx, Control::Shape(Box::new(shape_obj)));
-            paragraph.ctrl_data_records.insert(insert_idx, None);
+            while paragraph.ctrl_data_records.len() < paragraph.controls.len().saturating_sub(1) {
+                paragraph.ctrl_data_records.push(None);
+            }
+            let ctrl_data_insert_idx = insert_idx.min(paragraph.ctrl_data_records.len());
+            paragraph
+                .ctrl_data_records
+                .insert(ctrl_data_insert_idx, None);
 
             // char_offsets에 raw offset 삽입
             if !paragraph.char_offsets.is_empty() {
@@ -4201,7 +4207,8 @@ impl DocumentCore {
                 } else {
                     (char_offset * 2) as u32
                 };
-                paragraph.char_offsets.insert(insert_idx, raw_offset);
+                let raw_insert_idx = insert_idx.min(paragraph.char_offsets.len());
+                paragraph.char_offsets.insert(raw_insert_idx, raw_offset);
             }
 
             // 삽입된 컨트롤 이후의 char_offsets를 8만큼 증가 (텍스트 매핑 유지)
@@ -7117,6 +7124,36 @@ mod resize_clamp_tests {
         let common = shape_common(&core, para, ctrl);
         assert_eq!(common.width, 12000);
         assert_eq!(common.height, 8000);
+    }
+
+    #[test]
+    fn shape_insert_backfills_missing_ctrl_data_records() {
+        let mut core = make_test_core();
+        let (para, _) = create_rectangle(&mut core);
+        core.document.sections[0].paragraphs[para]
+            .ctrl_data_records
+            .clear();
+
+        core.create_shape_control_native(
+            0,
+            para,
+            999,
+            9000,
+            6750,
+            7200,
+            7200,
+            false,
+            "InFrontOfText",
+            "textbox",
+            false,
+            false,
+            &[],
+        )
+        .expect("create shape with missing ctrl_data_records");
+
+        let paragraph = &core.document.sections[0].paragraphs[para];
+        assert_eq!(paragraph.controls.len(), 2);
+        assert_eq!(paragraph.ctrl_data_records.len(), paragraph.controls.len());
     }
 }
 
