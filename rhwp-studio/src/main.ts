@@ -786,6 +786,66 @@ function removeFieldByIdForProof(params?: ClickHerePropsParams): Record<string, 
   };
 }
 
+function insertHeaderFooterFieldForProof(params?: Record<string, unknown>): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  const sectionCount = wasm.getSectionCount();
+  const requestedSectionIndex = Number(params?.sectionIndex);
+  const requestedIsHeader = typeof params?.isHeader === 'boolean' ? params.isHeader : undefined;
+  const requestedApplyTo = Number(params?.applyTo);
+  const requestedParaIndex = Number(params?.hfParaIndex);
+  const requestedCharOffset = Number(params?.charOffset);
+  const fieldType = Number.isInteger(Number(params?.fieldType)) ? Number(params?.fieldType) : 1;
+  const sectionIndexes = Number.isInteger(requestedSectionIndex)
+    ? [requestedSectionIndex]
+    : Array.from({ length: sectionCount }, (_, index) => index);
+  const headerFlags = requestedIsHeader === undefined ? [true, false] : [requestedIsHeader];
+  const applyToValues = Number.isInteger(requestedApplyTo) ? [requestedApplyTo] : [0, 1, 2, 3];
+
+  for (const sectionIndex of sectionIndexes) {
+    for (const isHeader of headerFlags) {
+      for (const applyTo of applyToValues) {
+        const summary = JSON.parse(wasm.getHeaderFooter(sectionIndex, isHeader, applyTo)) as Record<string, unknown>;
+        if (!summary.exists) continue;
+
+        const text = typeof summary.text === 'string' ? summary.text : '';
+        const hfParaIndex = Number.isInteger(requestedParaIndex) ? requestedParaIndex : 0;
+        const charOffset = Number.isInteger(requestedCharOffset) ? requestedCharOffset : text.length;
+        const result = wasm.insertFieldInHf(sectionIndex, isHeader, applyTo, hfParaIndex, charOffset, fieldType);
+
+        if (result.ok === true) {
+          inputHandler?.commitExternalUnsupportedDirectMutation(
+            'field_metadata_mutation',
+            'wasm_insert_field_in_hf',
+            'fieldCreate',
+          );
+        }
+
+        return {
+          ...result,
+          mutation: 'fieldCreate',
+          target: {
+            applyTo,
+            charOffset,
+            fieldType,
+            hfParaIndex,
+            isHeader,
+            sectionIndex,
+          },
+        };
+      }
+    }
+  }
+
+  return {
+    error: 'No header/footer target is available.',
+    mutation: 'fieldCreate',
+    ok: false,
+  };
+}
+
 // E2E 테스트용 전역 노출 (개발 모드 전용)
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
@@ -1753,6 +1813,10 @@ window.addEventListener('message', async (e) => {
       case 'removeFieldByIdForProof':
         await initPromise;
         reply(removeFieldByIdForProof(params));
+        break;
+      case 'insertHeaderFooterFieldForProof':
+        await initPromise;
+        reply(insertHeaderFooterFieldForProof(params));
         break;
       case 'getTableCellTextTargets':
         await initPromise;
