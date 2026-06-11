@@ -84,6 +84,14 @@ type ControlPasteCaptureProofParams = DeterministicEditParams & {
 type InternalPasteCaptureProofParams = DeterministicEditParams & {
   copyLength?: unknown;
 };
+type PictureObjectMutationProofParams = {
+  controlIndex?: unknown;
+  heightDelta?: unknown;
+  parentParaIndex?: unknown;
+  sectionIndex?: unknown;
+  targetType?: unknown;
+  widthDelta?: unknown;
+};
 
 type BodyParagraphTarget = {
   paragraphIndex: number;
@@ -96,6 +104,10 @@ type BodyControlTarget = {
   parentParaIndex: number;
   sectionIndex: number;
   type: string;
+};
+
+type PictureObjectTarget = BodyControlTarget & {
+  createdForProof?: boolean;
 };
 
 type TableCellTextTarget = {
@@ -431,6 +443,90 @@ function resolveBodyControlTarget(params?: ControlPasteCaptureProofParams): Body
   }
 
   throw new Error('control paste proof requires a body control target');
+}
+
+function resolvePictureObjectTarget(params?: PictureObjectMutationProofParams): PictureObjectTarget {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  if (params?.sectionIndex != null || params?.parentParaIndex != null || params?.controlIndex != null) {
+    const sectionIndex = finiteIndex(params?.sectionIndex, 'sectionIndex');
+    const parentParaIndex = finiteIndex(params?.parentParaIndex, 'parentParaIndex');
+    const controlIndex = finiteIndex(params?.controlIndex, 'controlIndex');
+    const requestedType = typeof params?.targetType === 'string' ? params.targetType : 'image';
+    return {
+      controlIndex,
+      pageIndex: -1,
+      parentParaIndex,
+      sectionIndex,
+      type: requestedType === 'shape' ? 'shape' : 'image',
+    };
+  }
+
+  const requestedType = typeof params?.targetType === 'string' ? params.targetType : undefined;
+  const seen = new Set<string>();
+  for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+    const layout = wasm.getPageControlLayout(pageIndex);
+    const controls = Array.isArray(layout.controls)
+      ? layout.controls as unknown as Array<Record<string, unknown>>
+      : [];
+    for (const control of controls) {
+      if (control.type !== 'image' && control.type !== 'shape') continue;
+      if (requestedType && control.type !== requestedType) continue;
+
+      const sectionIndex = Number(control.secIdx);
+      const parentParaIndex = Number(control.paraIdx);
+      const controlIndex = Number(control.controlIdx);
+      if (![sectionIndex, parentParaIndex, controlIndex].every(Number.isInteger)) continue;
+
+      const key = `${sectionIndex}:${parentParaIndex}:${controlIndex}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      return {
+        controlIndex,
+        pageIndex,
+        parentParaIndex,
+        sectionIndex,
+        type: String(control.type),
+      };
+    }
+  }
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler?.getCursorPosition();
+  const paragraphIndex = currentPosition?.paragraphIndex ?? 0;
+  const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+  const charOffset = Math.max(0, paragraphLength);
+  const imageData = proofPngBytes();
+  const result = wasm.insertPicture(
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+    '',
+    imageData,
+    75,
+    75,
+    1,
+    1,
+    'png',
+    'runtime picture object mutation proof seed',
+  );
+
+  if (!result.ok || result.paraIdx == null || result.controlIdx == null) {
+    throw new Error('picture object mutation proof could not create an image target');
+  }
+
+  return {
+    controlIndex: result.controlIdx,
+    createdForProof: true,
+    pageIndex: -1,
+    parentParaIndex: result.paraIdx,
+    sectionIndex,
+    type: 'image',
+  };
 }
 
 function applyDeterministicEdit(params?: DeterministicEditParams): Record<string, unknown> {
@@ -1475,6 +1571,79 @@ function resizeTableCellForProof(params?: TableCellResizeParams): Record<string,
       cellIndex,
     },
     updates,
+  };
+}
+
+function runPictureObjectMutationProof(params?: PictureObjectMutationProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const target = resolvePictureObjectTarget(params);
+  const widthDelta = params?.widthDelta == null ? 120 : finiteDelta(params.widthDelta, 'widthDelta');
+  const heightDelta = params?.heightDelta == null ? 120 : finiteDelta(params.heightDelta, 'heightDelta');
+  const operationType = target.type === 'shape' ? 'resizeShapeObject' : 'resizePictureObject';
+  const before = target.type === 'shape'
+    ? wasm.getShapeProperties(target.sectionIndex, target.parentParaIndex, target.controlIndex)
+    : wasm.getPictureProperties(target.sectionIndex, target.parentParaIndex, target.controlIndex);
+  const after = {
+    width: Math.max(1, before.width + widthDelta),
+    height: Math.max(1, before.height + heightDelta),
+  };
+  const position = inputHandler.getCursorPosition();
+  const operationId = `runtime-picture-object-${Date.now().toString(36)}`;
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType,
+    operation: (bridge) => {
+      if (target.type === 'shape') {
+        bridge.setShapeProperties(target.sectionIndex, target.parentParaIndex, target.controlIndex, after);
+      } else {
+        bridge.setPictureProperties(target.sectionIndex, target.parentParaIndex, target.controlIndex, after);
+      }
+      return {
+        ...position,
+        sectionIndex: target.sectionIndex,
+        paragraphIndex: target.parentParaIndex,
+        charOffset: 0,
+      };
+    },
+    meta: {
+      actionId: 'picture-object-mutation-proof-rpc',
+      domain: 'object',
+      refresh: 'full',
+      dirtyScope: 'document',
+    },
+  });
+
+  return {
+    ok: true,
+    operation: operationType,
+    operationId,
+    before: {
+      height: before.height,
+      width: before.width,
+    },
+    after,
+    target,
+    events: [
+      {
+        eventId: `${operationId}-unsupported`,
+        kind: 'unsupported',
+        mutation: operationType,
+        sourceHook: `snapshot_${operationType}`,
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['object_mutation'],
+    }),
+    runtimeIdentity,
   };
 }
 
@@ -2636,6 +2805,10 @@ window.addEventListener('message', async (e) => {
       case 'runImagePasteCaptureProof':
         await initPromise;
         reply(runImagePasteCaptureProof(params));
+        break;
+      case 'runPictureObjectMutationProof':
+        await initPromise;
+        reply(runPictureObjectMutationProof(params));
         break;
       case 'runControlPasteCaptureProof':
         await initPromise;
