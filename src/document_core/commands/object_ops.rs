@@ -6461,7 +6461,9 @@ impl DocumentCore {
         // text에 포함되지 않는 제어 문자(cc - text_len 차이)가 있을 수 있으므로 범위 확인
         if !paragraph.char_offsets.is_empty() {
             let text_len = paragraph.text.chars().count();
-            let safe_offset = char_offset.min(text_len);
+            let safe_offset = char_offset
+                .min(text_len)
+                .min(paragraph.char_offsets.len());
             for co in paragraph.char_offsets[safe_offset..].iter_mut() {
                 *co += 8;
             }
@@ -6690,7 +6692,9 @@ impl DocumentCore {
 
         if !paragraph.char_offsets.is_empty() {
             let text_len = paragraph.text.chars().count();
-            let safe_offset = char_offset.min(text_len);
+            let safe_offset = char_offset
+                .min(text_len)
+                .min(paragraph.char_offsets.len());
             for co in paragraph.char_offsets[safe_offset..].iter_mut() {
                 *co += 8;
             }
