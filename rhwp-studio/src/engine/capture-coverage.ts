@@ -9,6 +9,8 @@ export type CaptureCoverageOperationCategory =
   | 'footnote_text_replace'
   | 'complex_paste'
   | 'field_metadata_mutation'
+  | 'note_topology_mutation'
+  | 'table_topology_mutation'
   | 'object_mutation'
   | 'page_setting_mutation';
 
@@ -52,8 +54,16 @@ const complexPasteOperationTypes = new Set([
 ]);
 const objectMutationOperationTypes = new Set([
   'cutObject',
-  'cutTable',
   'deleteObject',
+]);
+const noteTopologyOperationTypes = new Set([
+  'footnoteInsert',
+  'insertEndnote',
+  'insertFootnote',
+  'noteInsert',
+]);
+const tableTopologyOperationTypes = new Set([
+  'cutTable',
   'deleteTable',
   'deleteTableColumn',
   'deleteTableRow',
@@ -90,7 +100,13 @@ function getUnsupportedSnapshotCategory(desc: OperationDescriptor): CaptureCover
   if (desc.meta?.domain === 'page' || pageSettingOperationTypes.has(desc.operationType)) {
     return 'page_setting_mutation';
   }
-  if (desc.meta?.domain === 'object' || desc.meta?.domain === 'table' || objectMutationOperationTypes.has(desc.operationType)) {
+  if (noteTopologyOperationTypes.has(desc.operationType)) {
+    return 'note_topology_mutation';
+  }
+  if (desc.meta?.domain === 'table' || tableTopologyOperationTypes.has(desc.operationType)) {
+    return 'table_topology_mutation';
+  }
+  if (desc.meta?.domain === 'object' || objectMutationOperationTypes.has(desc.operationType)) {
     return 'object_mutation';
   }
   if (complexPasteOperationTypes.has(desc.operationType)) {

@@ -77,6 +77,7 @@ type IosFallbackInputCaptureProofParams = DeterministicEditParams & {
   intermediateText?: unknown;
 };
 type ImagePasteCaptureProofParams = DeterministicEditParams;
+type FootnoteInsertionCaptureProofParams = DeterministicEditParams;
 type ControlPasteCaptureProofParams = DeterministicEditParams & {
   controlIndex?: unknown;
   parentParaIndex?: unknown;
@@ -1543,6 +1544,65 @@ function setFootnoteTextForProof(params?: FootnoteTextParams): Record<string, un
   };
 }
 
+function runFootnoteInsertionCaptureProof(params?: FootnoteInsertionCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphTarget = resolveBodyParagraphTarget(
+    sectionIndex,
+    params?.paragraphIndex,
+    currentPosition.paragraphIndex,
+  );
+  const charOffset = params?.charOffset == null
+    ? paragraphTarget.paragraphLength
+    : boundedInteger(params?.charOffset, paragraphTarget.paragraphLength, 0, paragraphTarget.paragraphLength);
+  const result = wasm.insertFootnote(sectionIndex, paragraphTarget.paragraphIndex, charOffset);
+
+  if (result.ok === true) {
+    inputHandler.commitExternalUnsupportedDirectMutation(
+      'note_topology_mutation',
+      'wasm_insert_footnote',
+      'footnoteInsert',
+    );
+  }
+
+  return {
+    ok: result.ok === true,
+    operation: 'insertFootnote',
+    position: {
+      sectionIndex,
+      paragraphIndex: paragraphTarget.paragraphIndex,
+      charOffset,
+    },
+    target: {
+      paraIdx: result.paraIdx,
+      controlIdx: result.controlIdx,
+      footnoteNumber: result.footnoteNumber,
+    },
+    events: [
+      {
+        eventId: `runtime-footnote-insert-${Date.now().toString(36)}-unsupported`,
+        kind: 'unsupported',
+        mutation: 'footnoteInsert',
+        sourceHook: 'wasm_insert_footnote',
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['note_topology_mutation'],
+    }),
+    runtimeIdentity,
+  };
+}
+
 function finiteDelta(value: unknown, name: string): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric === 0) {
@@ -2806,6 +2866,10 @@ window.addEventListener('message', async (e) => {
       case 'setFootnoteTextForProof':
         await initPromise;
         reply(setFootnoteTextForProof(params));
+        break;
+      case 'runFootnoteInsertionCaptureProof':
+        await initPromise;
+        reply(runFootnoteInsertionCaptureProof(params));
         break;
       case 'resizeTableCellForProof':
         await initPromise;
