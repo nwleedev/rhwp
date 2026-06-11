@@ -3,7 +3,7 @@ import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
-import { DeleteTextCommand, InsertTextCommand } from '@/engine/command';
+import { DeleteTextCommand, InsertTextCommand, type EditCommand } from '@/engine/command';
 import { Toolbar } from '@/ui/toolbar';
 import { MenuBar } from '@/ui/menu-bar';
 import { loadWebFonts } from '@/core/font-loader';
@@ -71,6 +71,7 @@ type DeterministicEditParams = {
 };
 
 type UndoRedoCaptureProofParams = DeterministicEditParams;
+type RecordOnlyCaptureProofParams = DeterministicEditParams;
 
 type TableCellTextTarget = {
   cellIndex: number;
@@ -496,6 +497,79 @@ function runUndoRedoCaptureProof(params?: UndoRedoCaptureProofParams): Record<st
     canRedoAfterUndo,
     canUndoAfterRedo: inputHandler.canUndo(),
     canRedoAfterRedo: inputHandler.canRedo(),
+    runtimeIdentity,
+  };
+}
+
+function runRecordOnlyCaptureProof(params?: RecordOnlyCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const charOffset = params?.charOffset == null
+    ? currentPosition.charOffset
+    : boundedInteger(params?.charOffset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const text = deterministicEditText({ ...params, text: params?.text ?? 'record-only-proof' });
+  const operationId = `runtime-record-only-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+  };
+  const command = {
+    type: 'insertText',
+    timestamp: Date.now(),
+    position,
+    execute: () => position,
+    undo: () => position,
+    mergeWith: () => null,
+  } satisfies EditCommand & { position: typeof position };
+
+  inputHandler.executeOperation({
+    kind: 'record',
+    command,
+    meta: {
+      actionId: 'record-only-capture-proof-rpc',
+      domain: 'text',
+      refresh: 'none',
+      dirtyScope: 'none',
+      selection: 'none',
+    },
+  });
+
+  return {
+    ok: true,
+    operationId,
+    text,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset,
+    },
+    events: [
+      {
+        eventId: `${operationId}-record-only`,
+        kind: 'record_only',
+        reason: 'runtime command_history_record event is already reflected in preview and must not be replayed',
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['body_text_replace'],
+    }),
+    canUndoAfterRecord: inputHandler.canUndo(),
+    canRedoAfterRecord: inputHandler.canRedo(),
     runtimeIdentity,
   };
 }
@@ -1966,6 +2040,10 @@ window.addEventListener('message', async (e) => {
       case 'runUndoRedoCaptureProof':
         await initPromise;
         reply(runUndoRedoCaptureProof(params));
+        break;
+      case 'runRecordOnlyCaptureProof':
+        await initPromise;
+        reply(runRecordOnlyCaptureProof(params));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);
