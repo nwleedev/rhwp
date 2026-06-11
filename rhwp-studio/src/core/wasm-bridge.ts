@@ -1745,6 +1745,12 @@ export class WasmBridge {
     ));
   }
 
+  /** field_id로 누름틀 필드를 제거한다 (텍스트 유지). */
+  removeFieldById(fieldId: number): { ok: boolean; fieldId?: number; fieldType?: string; error?: string } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).removeFieldById(fieldId));
+  }
+
   /** 활성 필드를 설정한다 (안내문 숨김용). 변경 시 true 반환. */
   setActiveField(pos: DocumentPosition): boolean {
     if (!this.doc) return false;

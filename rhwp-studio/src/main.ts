@@ -764,6 +764,28 @@ function recordFieldMetadataMutationForProof(params?: ClickHerePropsParams): Rec
   };
 }
 
+function removeFieldByIdForProof(params?: ClickHerePropsParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+
+  const fieldId = parseClickHereFieldId(params);
+  const result = wasm.removeFieldById(fieldId);
+
+  if (result.ok === true) {
+    inputHandler?.commitExternalUnsupportedDirectMutation(
+      'field_metadata_mutation',
+      'wasm_remove_field_by_id',
+      'fieldDelete',
+    );
+  }
+
+  return {
+    ...result,
+    mutation: 'fieldDelete',
+  };
+}
+
 // E2E 테스트용 전역 노출 (개발 모드 전용)
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
@@ -1727,6 +1749,10 @@ window.addEventListener('message', async (e) => {
       case 'recordFieldMetadataMutationForProof':
         await initPromise;
         reply(recordFieldMetadataMutationForProof(params));
+        break;
+      case 'removeFieldByIdForProof':
+        await initPromise;
+        reply(removeFieldByIdForProof(params));
         break;
       case 'getTableCellTextTargets':
         await initPromise;

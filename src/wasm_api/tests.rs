@@ -19377,6 +19377,39 @@ fn test_task231_update_click_here_props_name_mapping() {
     assert!(props.contains("\"name\":\"목차1\""), "props에 새 이름 표시");
 }
 
+/// field_id 기반 누름틀 삭제가 field range만 제거하고 텍스트는 유지하는지 검증
+#[test]
+fn test_remove_field_by_id_keeps_text() {
+    let data = std::fs::read("samples/field-01.hwp").expect("파일 읽기 실패");
+    let mut doc = HwpDocument::from_bytes(&data).expect("HwpDocument 생성 실패");
+    let field_id = 1584999796u32;
+
+    let before_para = &doc.document.sections[0].paragraphs[7];
+    let before_text = before_para.text.clone();
+    assert_eq!(before_para.field_ranges.len(), 1, "삭제 전 field range");
+
+    let result = doc.remove_field_by_id_api(field_id);
+    eprintln!("[removeFieldById] {}", result);
+    assert!(result.contains("\"ok\":true"), "삭제 성공");
+    assert!(
+        result.contains("\"fieldId\":1584999796"),
+        "삭제 field id 반환"
+    );
+
+    let after_para = &doc.document.sections[0].paragraphs[7];
+    assert_eq!(after_para.text, before_text, "필드 삭제 후 텍스트 유지");
+    assert!(
+        after_para.field_ranges.is_empty(),
+        "field range만 제거되어야 함"
+    );
+
+    let props_after = doc.get_click_here_props(field_id);
+    assert!(
+        props_after.contains("\"ok\":true"),
+        "control metadata는 삭제 proof 후에도 조회 가능"
+    );
+}
+
 /// [진단용] HWP 파일의 모든 ClickHere 필드 command + CTRL_DATA 덤프
 #[test]
 fn diag_dump_all_clickhere_commands() {

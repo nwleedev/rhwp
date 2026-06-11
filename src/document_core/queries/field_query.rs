@@ -43,6 +43,11 @@ pub struct FieldInfo {
     pub field_range_index: usize,
 }
 
+#[derive(Debug)]
+struct RemovedFieldInfo {
+    field_type: String,
+}
+
 impl DocumentCore {
     /// 문서 전체에서 모든 필드를 검색하여 목록으로 반환한다.
     pub fn collect_all_fields(&self) -> Vec<FieldInfo> {
@@ -533,6 +538,29 @@ impl DocumentCore {
         Ok(r#"{"ok":true}"#.to_string())
     }
 
+    /// field_id로 ClickHere 필드를 제거한다 (텍스트 유지, 필드 마커만 삭제).
+    pub fn remove_field_by_id(&mut self, field_id: u32) -> Result<String, HwpError> {
+        for section_idx in 0..self.document.sections.len() {
+            let removed = {
+                let section = &mut self.document.sections[section_idx];
+                section
+                    .paragraphs
+                    .iter_mut()
+                    .find_map(|para| remove_field_by_id_in_para(para, field_id))
+            };
+
+            if let Some(info) = removed {
+                self.recompose_section(section_idx);
+                return Ok(format!(
+                    "{{\"ok\":true,\"fieldId\":{},\"fieldType\":\"{}\"}}",
+                    field_id, info.field_type
+                ));
+            }
+        }
+
+        Err(HwpError::InvalidField(format!("필드 ID {} 없음", field_id)))
+    }
+
     /// 커서가 진입한 활성 필드를 설정한다 (안내문 렌더링 스킵용).
     ///
     /// 본문 문단: `set_active_field(sec, para, char_offset)`
@@ -957,6 +985,62 @@ fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> Result<(), 
             "커서 위치에 누름틀 필드 없음".into(),
         )),
     }
+}
+
+fn remove_field_by_id_in_para(para: &mut Paragraph, field_id: u32) -> Option<RemovedFieldInfo> {
+    let idx = para.field_ranges.iter().position(|fr| {
+        if let Some(Control::Field(field)) = para.controls.get(fr.control_idx) {
+            field.field_type == FieldType::ClickHere && field.field_id == field_id
+        } else {
+            false
+        }
+    });
+
+    if let Some(i) = idx {
+        let field_type = para
+            .field_ranges
+            .get(i)
+            .and_then(|fr| para.controls.get(fr.control_idx))
+            .and_then(|control| match control {
+                Control::Field(field) => Some(field.field_type_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        para.field_ranges.remove(i);
+        return Some(RemovedFieldInfo { field_type });
+    }
+
+    for control in &mut para.controls {
+        match control {
+            Control::Table(table) => {
+                for cell in &mut table.cells {
+                    if let Some(info) = cell
+                        .paragraphs
+                        .iter_mut()
+                        .find_map(|cell_para| remove_field_by_id_in_para(cell_para, field_id))
+                    {
+                        return Some(info);
+                    }
+                }
+            }
+            Control::Shape(shape) => {
+                if let Some(drawing) = shape.drawing_mut() {
+                    if let Some(text_box) = drawing.text_box.as_mut() {
+                        if let Some(info) = text_box
+                            .paragraphs
+                            .iter_mut()
+                            .find_map(|text_para| remove_field_by_id_in_para(text_para, field_id))
+                        {
+                            return Some(info);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// 문자열을 JSON 이스케이프한다.

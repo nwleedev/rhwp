@@ -3764,6 +3764,18 @@ impl HwpDocument {
         }
     }
 
+    /// field_id로 누름틀 필드를 제거한다 (텍스트 유지).
+    #[wasm_bindgen(js_name = removeFieldById)]
+    pub fn remove_field_by_id_api(&mut self, field_id: u32) -> String {
+        match self.remove_field_by_id(field_id) {
+            Ok(s) => s,
+            Err(e) => {
+                let escaped = e.to_string().replace('\\', "\\\\").replace('"', "\\\"");
+                format!("{{\"ok\":false,\"error\":\"{}\"}}", escaped)
+            }
+        }
+    }
+
     /// 활성 필드를 설정한다 (본문 문단 — 안내문 숨김용).
     #[wasm_bindgen(js_name = setActiveField)]
     pub fn set_active_field_api(
