@@ -1945,6 +1945,200 @@ fn test_clipboard_copy_control() {
 }
 
 #[test]
+fn test_paste_control_survives_hwpx_export_reload() {
+    use crate::model::control::Control;
+
+    fn count_tables(doc: &crate::model::document::Document) -> usize {
+        doc.sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|para| &para.controls)
+            .filter(|control| matches!(control, Control::Table(_)))
+            .count()
+    }
+
+    let mut doc = create_doc_with_table();
+    doc.document
+        .doc_info
+        .char_shapes
+        .push(crate::model::style::CharShape::default());
+    doc.document
+        .doc_info
+        .para_shapes
+        .push(crate::model::style::ParaShape::default());
+    doc.document
+        .doc_info
+        .border_fills
+        .push(crate::model::style::BorderFill::default());
+    doc.document
+        .doc_info
+        .styles
+        .push(crate::model::style::Style {
+            raw_data: None,
+            local_name: "바탕글".to_string(),
+            english_name: "Normal".to_string(),
+            style_type: 0,
+            next_style_id: 0,
+            lang_id: 1042,
+            para_shape_id: 0,
+            char_shape_id: 0,
+        });
+    doc.document.sections[0].paragraphs.push(Paragraph {
+        text: String::new(),
+        char_count: 1,
+        char_shapes: vec![crate::model::paragraph::CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 0,
+        }],
+        line_segs: vec![LineSeg {
+            text_start: 0,
+            line_height: 1000,
+            text_height: 1000,
+            baseline_distance: 850,
+            line_spacing: 600,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let before = count_tables(doc.document());
+    doc.copy_control_native(0, 0, &[], 0)
+        .expect("copy table control");
+    doc.paste_control_native(0, 1, 0)
+        .expect("paste table control");
+
+    assert_eq!(count_tables(doc.document()), before + 1);
+    let pasted_para = &doc.document().sections[0].paragraphs[1];
+    let pasted_table_height = match &pasted_para.controls[0] {
+        Control::Table(table) => table
+            .common
+            .height
+            .max(table.get_row_heights().iter().sum()) as i32,
+        _ => panic!("pasted control must be a table"),
+    };
+    assert_eq!(
+        pasted_para.line_segs[0].line_height, pasted_table_height,
+        "pasted table control line segment must use table height before pagination/export"
+    );
+
+    let exported = doc.export_hwpx_native().expect("export pasted control");
+    let reparsed = crate::parser::hwpx::parse_hwpx(&exported).expect("reparse pasted control hwpx");
+
+    assert_eq!(
+        count_tables(&reparsed),
+        before + 1,
+        "pasted control must be materialized in HWPX export/reload"
+    );
+}
+
+#[test]
+fn test_rhwp_private_control_paste_export_reload_page_count() {
+    use crate::model::control::Control;
+
+    fn table_positions(doc: &crate::model::document::Document) -> Vec<(usize, usize, usize)> {
+        doc.sections
+            .iter()
+            .enumerate()
+            .flat_map(|(section_idx, section)| {
+                section
+                    .paragraphs
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(para_idx, para)| {
+                        para.controls.iter().enumerate().filter_map(
+                            move |(control_idx, control)| {
+                                if matches!(control, Control::Table(_)) {
+                                    Some((section_idx, para_idx, control_idx))
+                                } else {
+                                    None
+                                }
+                            },
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    let Ok(path) = std::env::var("RHWP_PRIVATE_HWPX_FIXTURE") else {
+        return;
+    };
+
+    let bytes = std::fs::read(&path).expect("read private hwpx");
+    let mut doc = HwpDocument::from_bytes(&bytes).expect("parse private hwpx");
+    let original_reload_pages = HwpDocument::from_bytes(
+        &doc.export_hwpx_native()
+            .expect("export original private hwpx"),
+    )
+    .expect("reload original private hwpx export")
+    .page_count();
+    let source = doc
+        .document()
+        .sections
+        .iter()
+        .enumerate()
+        .flat_map(|(section_idx, section)| {
+            section
+                .paragraphs
+                .iter()
+                .enumerate()
+                .map(move |(para_idx, para)| (section_idx, para_idx, para))
+        })
+        .find_map(|(section_idx, para_idx, para)| {
+            para.controls
+                .iter()
+                .position(|control| matches!(control, Control::Table(_)))
+                .map(|control_idx| (section_idx, para_idx, control_idx))
+        })
+        .expect("private hwpx must contain a body table");
+
+    let before_table_positions = table_positions(doc.document());
+    let target_para_idx = source.1.saturating_add(1);
+    let before_pages = doc.page_count();
+    doc.copy_control_native(source.0, source.1, &[], source.2)
+        .expect("copy private table control");
+    doc.paste_control_native(source.0, target_para_idx, 0)
+        .expect("paste private table control");
+    let after_table_positions = table_positions(doc.document());
+    let inserted = after_table_positions
+        .iter()
+        .find(|position| !before_table_positions.contains(position))
+        .copied();
+    assert_eq!(
+        after_table_positions.len(),
+        before_table_positions.len() + 1,
+        "control paste must add one table in memory"
+    );
+    assert!(
+        inserted.is_some(),
+        "inserted table position must be discoverable"
+    );
+    let edited_pages = doc.page_count();
+    let exported = doc
+        .export_hwpx_native()
+        .expect("export private control paste");
+    let reload = HwpDocument::from_bytes(&exported).expect("reload exported private control paste");
+    let reload_pages = reload.page_count();
+    let reload_table_positions = table_positions(reload.document());
+    let reload_inserted = reload_table_positions
+        .iter()
+        .find(|position| !before_table_positions.contains(position))
+        .copied();
+    assert_eq!(
+        reload_table_positions.len(),
+        after_table_positions.len(),
+        "control paste export/reload must preserve table count"
+    );
+    assert!(
+        reload_inserted.is_some(),
+        "inserted table position must survive export/reload"
+    );
+
+    assert_eq!(
+        edited_pages, reload_pages,
+        "control paste export/reload page count drift: before={before_pages}, original_reload={original_reload_pages}, edited={edited_pages}, reload={reload_pages}, source={source:?}"
+    );
+}
+
+#[test]
 fn test_clipboard_copy_control_cell_path_json_arg() {
     // [Task #1161] copyControl 래퍼의 cell_path_json 인자: 빈 문자열/"[]" 는 본문.
     // (에러 경로는 JsValue 를 구성하므로 native 테스트에서 호출 불가 → OK 경로만 검증.

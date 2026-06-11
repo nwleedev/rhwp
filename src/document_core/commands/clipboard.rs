@@ -253,6 +253,11 @@ impl DocumentCore {
             let ctrl_height = match control {
                 Control::Picture(pic) => pic.common.height as i32,
                 Control::Shape(shape) => shape.common().height as i32,
+                Control::Table(table) => table
+                    .common
+                    .height
+                    .max(table.get_row_heights().iter().sum())
+                    as i32,
                 _ => 0,
             };
             if ctrl_height > 0 {
@@ -789,6 +794,11 @@ impl DocumentCore {
                 .map(|ctrl| match ctrl {
                     Control::Picture(pic) => pic.common.height as i32,
                     Control::Shape(shape) => shape.common().height as i32,
+                    Control::Table(table) => table
+                        .common
+                        .height
+                        .max(table.get_row_heights().iter().sum())
+                        as i32,
                     _ => 0,
                 })
                 .unwrap_or(0);

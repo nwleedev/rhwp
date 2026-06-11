@@ -1444,7 +1444,7 @@ impl HeightMeasurer {
 
     /// 구역의 콘텐츠 높이를 문단 수준 증분 측정한다.
     /// dirty_paras가 Some(bits)이면 dirty 문단만 재측정하고,
-    /// None이면 전체 재측정한다 (measure_section_incremental 폴백).
+    /// None이면 문단/표 측정 캐시를 재사용하지 않고 전체 재측정한다.
     pub fn measure_section_selective(
         &self,
         paragraphs: &[Paragraph],
@@ -1457,14 +1457,7 @@ impl HeightMeasurer {
         let dirty_bits = match dirty_paras {
             Some(bits) => bits,
             None => {
-                // 전체 dirty: 기존 incremental (표 수준만 캐싱) 폴백
-                return self.measure_section_incremental(
-                    paragraphs,
-                    composed,
-                    styles,
-                    prev_measured,
-                    column_width_px,
-                );
+                return self.measure_section(paragraphs, composed, styles, column_width_px);
             }
         };
 
