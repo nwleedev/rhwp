@@ -538,7 +538,7 @@ impl DocumentCore {
         Ok(r#"{"ok":true}"#.to_string())
     }
 
-    /// field_id로 ClickHere 필드를 제거한다 (텍스트 유지, 필드 마커만 삭제).
+    /// field_id로 필드를 제거한다 (텍스트 유지, 필드 마커만 삭제).
     pub fn remove_field_by_id(&mut self, field_id: u32) -> Result<String, HwpError> {
         for section_idx in 0..self.document.sections.len() {
             let removed = {
@@ -990,7 +990,7 @@ fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> Result<(), 
 fn remove_field_by_id_in_para(para: &mut Paragraph, field_id: u32) -> Option<RemovedFieldInfo> {
     let idx = para.field_ranges.iter().position(|fr| {
         if let Some(Control::Field(field)) = para.controls.get(fr.control_idx) {
-            field.field_type == FieldType::ClickHere && field.field_id == field_id
+            field.field_id == field_id
         } else {
             false
         }
