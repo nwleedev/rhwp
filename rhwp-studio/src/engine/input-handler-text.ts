@@ -416,6 +416,7 @@ export function onInput(this: any, e?: InputEvent): void {
     // 현재 div 전체 텍스트를 문서에 삽입 (빈 값이면 삭제만)
     if (text) {
       this.insertTextAtRaw(this._iosAnchor, text);
+      this.recordCaptureCoverageDirectMutation('body_text_replace', 'wasm_insert_text_at_raw_ios_fallback');
       this._iosLength = text.length;
     } else {
       this._iosLength = 0;

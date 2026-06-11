@@ -1821,6 +1821,61 @@ export class InputHandler {
     };
   }
 
+  runIosFallbackInputCaptureProof(finalText: string, intermediateText: string): {
+    afterPosition: DocumentPosition;
+    beforePosition: DocumentPosition;
+    insertedText: string;
+    intermediateText: string;
+  } {
+    const beforePosition = this.cursor.getPosition();
+    const wasActive = this.active;
+    const wasIos = this._isIOS;
+    const previousIosAnchor = this._iosAnchor;
+    const previousIosLength = this._iosLength;
+    const previousIosPrevText = this._iosPrevText;
+    const previousIosComposing = this._iosComposing;
+    const previousIosInputTimer = this._iosInputTimer;
+
+    clearTimeout(this._iosInputTimer);
+    this.active = true;
+    this._isIOS = true;
+    this._iosAnchor = null;
+    this._iosLength = 0;
+    this._iosPrevText = '';
+    this._iosComposing = false;
+    this._iosInputTimer = null;
+
+    try {
+      this.textarea.value = intermediateText;
+      this.onInput();
+      this.textarea.value = finalText;
+      this.onInput();
+
+      const iosAnchor = this._iosAnchor ?? beforePosition;
+      clearTimeout(this._iosInputTimer);
+      this._iosInputTimer = null;
+      this.afterTextInputEdit(iosAnchor, this.cursor.getPosition());
+    } finally {
+      clearTimeout(this._iosInputTimer);
+      this._isIOS = wasIos;
+      this._iosAnchor = previousIosAnchor;
+      this._iosLength = previousIosLength;
+      this._iosPrevText = previousIosPrevText;
+      this._iosComposing = previousIosComposing;
+      this._iosInputTimer = previousIosInputTimer;
+      if (!wasActive) {
+        this.active = false;
+      }
+    }
+
+    return {
+      afterPosition: this.cursor.getPosition(),
+      beforePosition,
+      insertedText: this.getTextAt(beforePosition, finalText.length),
+      intermediateText,
+    };
+  }
+
   recordCaptureCoverageDirectMutation(
     category: CaptureCoverageOperationCategory,
     sourceHook: string,

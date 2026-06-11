@@ -73,6 +73,9 @@ type DeterministicEditParams = {
 type UndoRedoCaptureProofParams = DeterministicEditParams;
 type RecordOnlyCaptureProofParams = DeterministicEditParams;
 type ImeCompositionCaptureProofParams = DeterministicEditParams;
+type IosFallbackInputCaptureProofParams = DeterministicEditParams & {
+  intermediateText?: unknown;
+};
 
 type TableCellTextTarget = {
   cellIndex: number;
@@ -658,6 +661,112 @@ function runImeCompositionCaptureProof(params?: ImeCompositionCaptureProofParams
     }),
     canUndoAfterComposition: inputHandler.canUndo(),
     canRedoAfterComposition: inputHandler.canRedo(),
+    runtimeIdentity,
+  };
+}
+
+function iosFallbackIntermediateText(params: IosFallbackInputCaptureProofParams | undefined, finalText: string): string {
+  const text = typeof params?.intermediateText === 'string'
+    ? params.intermediateText
+    : finalText.slice(0, Math.max(1, Math.floor(finalText.length / 2)));
+  const normalized = text.trim();
+  if (!normalized) {
+    throw new Error('iOS fallback intermediate text is empty');
+  }
+  if (normalized.length > 128) {
+    throw new Error('iOS fallback intermediate text is too long');
+  }
+  if (normalized === finalText) {
+    throw new Error('iOS fallback intermediate text must differ from final text');
+  }
+  return normalized;
+}
+
+function runIosFallbackInputCaptureProof(params?: IosFallbackInputCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const charOffset = params?.charOffset == null
+    ? currentPosition.charOffset
+    : boundedInteger(params?.charOffset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const text = deterministicEditText({ ...params, text: params?.text ?? 'ios-fallback-proof' });
+  const intermediateText = iosFallbackIntermediateText(params, text);
+  const operationId = `runtime-ios-fallback-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+  };
+  if (!inputHandler.moveCursorTo(position)) {
+    throw new Error('iOS fallback proof target position is unavailable');
+  }
+  const proof = inputHandler.runIosFallbackInputCaptureProof(text, intermediateText);
+
+  return {
+    ok: true,
+    operationId,
+    text,
+    intermediateText: proof.intermediateText,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset,
+    },
+    afterPosition: {
+      sectionIndex: proof.afterPosition.sectionIndex,
+      paragraphIndex: proof.afterPosition.paragraphIndex,
+      charOffset: proof.afterPosition.charOffset,
+    },
+    insertedText: proof.insertedText,
+    events: [
+      {
+        eventId: `${operationId}-intermediate-raw`,
+        kind: 'snapshot',
+        reason: 'iOS fallback intermediate raw mutation is replaced by the final input value',
+      },
+      {
+        eventId: `${operationId}-operation`,
+        kind: 'operation',
+        operation: {
+          baseDocumentSha256: 'runtime-proof-base-unavailable',
+          coverage: {
+            unsupportedMutations: [],
+            verdict: 'supported_candidate',
+          },
+          kind: 'body_text_replace',
+          locator: {
+            entryName: `Contents/section${sectionIndex}.xml`,
+            expectedText: '',
+          },
+          manifestSchemaVersion: 1,
+          operationId,
+          payload: {
+            payloadSha256: runtimeProofHash(proof.insertedText),
+            replacementText: proof.insertedText,
+          },
+          runtimeIdentity,
+          sourceHook: 'wasm_insert_text_at_raw_ios_fallback',
+        },
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['body_text_replace'],
+    }),
+    canUndoAfterFallback: inputHandler.canUndo(),
+    canRedoAfterFallback: inputHandler.canRedo(),
     runtimeIdentity,
   };
 }
@@ -2136,6 +2245,10 @@ window.addEventListener('message', async (e) => {
       case 'runImeCompositionCaptureProof':
         await initPromise;
         reply(runImeCompositionCaptureProof(params));
+        break;
+      case 'runIosFallbackInputCaptureProof':
+        await initPromise;
+        reply(runIosFallbackInputCaptureProof(params));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);
