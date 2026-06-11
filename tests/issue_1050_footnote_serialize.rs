@@ -22,7 +22,10 @@
 //! - `src/serializer/body_text.rs::serialize_para_text` — AutoNumber placeholder 검출 분기
 
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::Path;
+
+use rhwp::model::control::Control;
 
 fn load(rel: &str) -> rhwp::wasm_api::HwpDocument {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
@@ -50,6 +53,28 @@ fn svg_text_seq(svg: &str) -> String {
         break;
     }
     out
+}
+
+fn hwpx_section_xml(bytes: &[u8], path: &str) -> String {
+    let cursor = Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).expect("open hwpx zip");
+    let mut entry = archive.by_name(path).expect("section xml entry");
+    let mut xml = String::new();
+    entry.read_to_string(&mut xml).expect("read section xml");
+    xml
+}
+
+fn first_footnote_target(doc: &rhwp::wasm_api::HwpDocument) -> (usize, usize, usize) {
+    for (section_idx, section) in doc.document().sections.iter().enumerate() {
+        for (para_idx, para) in section.paragraphs.iter().enumerate() {
+            for (control_idx, ctrl) in para.controls.iter().enumerate() {
+                if matches!(ctrl, Control::Footnote(_)) {
+                    return (section_idx, para_idx, control_idx);
+                }
+            }
+        }
+    }
+    panic!("fixture must contain a footnote control");
 }
 
 /// HWPX 출처 footnote 가 hwp 저장 후 재로드 시 글상자 안 각주 본문 표시 (Task #1050 본질).
@@ -335,4 +360,91 @@ fn issue_1050_footnote_01_hwpx_roundtrip() {
     let svg = page_svg(&saved, 0);
     let seq = svg_text_seq(&svg);
     assert!(seq.contains("1)"), "footnote-01 page 1 의 각주 마크 표시");
+}
+
+/// HWPX serializer는 parser/IR에 보존된 footnote 속성을 다시 출력해야 한다.
+#[test]
+fn issue_1050_hwpx_footnote_attrs_preserved_on_hwpx_export() {
+    use rhwp::serializer::hwpx::serialize_hwpx;
+
+    let doc = load("samples/hwpx/footnote-01.hwpx");
+    let (section_idx, para_idx, control_idx) = first_footnote_target(&doc);
+    let Control::Footnote(note) =
+        &doc.document().sections[section_idx].paragraphs[para_idx].controls[control_idx]
+    else {
+        panic!("target must be footnote");
+    };
+    assert_ne!(
+        note.after_decoration_letter, 0,
+        "fixture should carry suffixChar"
+    );
+    assert_ne!(note.instance_id, 0, "fixture should carry instId");
+
+    let out = serialize_hwpx(doc.document()).expect("serialize hwpx");
+    let xml = hwpx_section_xml(&out, "Contents/section0.xml");
+    assert!(
+        xml.contains(&format!(
+            r#"<hp:footNote number="{}" suffixChar="{}" instId="{}">"#,
+            note.number, note.after_decoration_letter, note.instance_id
+        )),
+        "HWPX footNote attrs must survive serialize. expected number={}, suffixChar={}, instId={}",
+        note.number,
+        note.after_decoration_letter,
+        note.instance_id,
+    );
+}
+
+/// 각주 텍스트 직접 수정은 preview와 HWPX reload 양쪽에 materialize되어야 한다.
+#[test]
+fn issue_1050_footnote_text_edit_hwpx_reload_contains_inserted_text() {
+    let mut doc = load("samples/hwpx/footnote-01.hwpx");
+    let (section_idx, para_idx, control_idx) = first_footnote_target(&doc);
+    let info = doc
+        .get_footnote_info_native(section_idx, para_idx, control_idx)
+        .expect("footnote info");
+    let info: serde_json::Value = serde_json::from_str(&info).expect("footnote info json");
+    let old_value = info["texts"][0].as_str().expect("first footnote text");
+    doc.insert_text_in_footnote_native(
+        section_idx,
+        para_idx,
+        control_idx,
+        0,
+        old_value.chars().count(),
+        " footnote-proof",
+    )
+    .expect("insert text in footnote");
+
+    let edited_svgs: Vec<String> = (0..doc.page_count())
+        .map(|page| page_svg(&doc, page))
+        .collect();
+    let exported = doc.export_hwpx_native().expect("export hwpx");
+    let reloaded =
+        rhwp::wasm_api::HwpDocument::from_bytes(&exported).expect("reload exported hwpx");
+    let reloaded_svgs: Vec<String> = (0..reloaded.page_count())
+        .map(|page| page_svg(&reloaded, page))
+        .collect();
+
+    assert_eq!(
+        edited_svgs.len(),
+        reloaded_svgs.len(),
+        "edited preview and reload page count must match"
+    );
+    let edited_text = edited_svgs
+        .iter()
+        .map(|svg| svg_text_seq(svg))
+        .collect::<Vec<_>>()
+        .join("");
+    let reloaded_text = reloaded_svgs
+        .iter()
+        .map(|svg| svg_text_seq(svg))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        edited_text.contains("footnote-proof"),
+        "edited preview should render inserted footnote text"
+    );
+    assert!(
+        reloaded_text.contains("footnote-proof"),
+        "exported HWPX reload should render inserted footnote text"
+    );
 }

@@ -3014,6 +3014,9 @@ fn dump_controls(args: &[String]) {
                     Control::Bookmark(bm) => {
                         println!("{}책갈피: \"{}\"", prefix, bm.name);
                     }
+                    Control::Markpen(_) => {
+                        println!("{}형광펜 범위", prefix);
+                    }
                     Control::Hyperlink(hl) => {
                         println!("{}하이퍼링크: \"{}\"", prefix, hl.url);
                     }
@@ -3871,6 +3874,7 @@ fn control_tag(c: &rhwp::model::control::Control) -> &'static str {
         Control::NewNumber(_) => "nwno",
         Control::PageNumberPos(_) => "pgnp",
         Control::Bookmark(_) => "bokm",
+        Control::Markpen(_) => "markpen",
         Control::Hyperlink(_) => "hlk",
         Control::Ruby(_) => "ruby",
         Control::CharOverlap(_) => "tcps",

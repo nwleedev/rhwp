@@ -490,7 +490,9 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
+        self.recompose_section(section_idx);
         self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
 
         let new_offset = char_offset + new_chars_count;
         self.event_log.push(DocumentEvent::TextInserted {
@@ -523,7 +525,9 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
+        self.recompose_section(section_idx);
         self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
 
         self.event_log.push(DocumentEvent::TextDeleted {
             section: section_idx,
@@ -602,7 +606,9 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
+        self.recompose_section(section_idx);
         self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
 
         self.event_log.push(DocumentEvent::ParagraphSplit {
             section: section_idx,
@@ -676,7 +682,9 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
+        self.recompose_section(section_idx);
         self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
 
         self.event_log.push(DocumentEvent::ParagraphMerged {
             section: section_idx,

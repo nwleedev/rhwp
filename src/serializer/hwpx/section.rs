@@ -1684,13 +1684,26 @@ fn render_common_shape_xml(tag: &str, c: &CommonObjAttr) -> String {
 fn render_note_sublist(
     tag: &str,
     number: u16,
+    prefix_char: u16,
+    suffix_char: u16,
+    instance_id: u32,
     paragraphs: &[Paragraph],
     ctx: &mut SerializeContext,
 ) -> String {
+    let mut attrs = format!(r#" number="{num}""#, num = number);
+    if prefix_char != 0 {
+        attrs.push_str(&format!(r#" prefixChar="{}""#, prefix_char));
+    }
+    if suffix_char != 0 {
+        attrs.push_str(&format!(r#" suffixChar="{}""#, suffix_char));
+    }
+    if instance_id != 0 {
+        attrs.push_str(&format!(r#" instId="{}""#, instance_id));
+    }
     let mut out = format!(
-        r#"<hp:ctrl><hp:{tag} number="{num}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"#,
+        r#"<hp:ctrl><hp:{tag}{attrs}><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"#,
         tag = tag,
-        num = number,
+        attrs = attrs,
     );
     let mut vert_cursor: u32 = 0;
     for p in paragraphs.iter() {
@@ -1707,11 +1720,27 @@ fn render_note_sublist(
 }
 
 fn render_footnote(note: &Footnote, ctx: &mut SerializeContext) -> String {
-    render_note_sublist("footNote", note.number, &note.paragraphs, ctx)
+    render_note_sublist(
+        "footNote",
+        note.number,
+        note.before_decoration_letter,
+        note.after_decoration_letter,
+        note.instance_id,
+        &note.paragraphs,
+        ctx,
+    )
 }
 
 fn render_endnote(note: &Endnote, ctx: &mut SerializeContext) -> String {
-    render_note_sublist("endNote", note.number, &note.paragraphs, ctx)
+    render_note_sublist(
+        "endNote",
+        note.number,
+        note.before_decoration_letter,
+        note.after_decoration_letter,
+        note.instance_id,
+        &note.paragraphs,
+        ctx,
+    )
 }
 
 fn render_equation(eq: &Equation) -> String {
