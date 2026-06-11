@@ -76,6 +76,7 @@ type ImeCompositionCaptureProofParams = DeterministicEditParams;
 type IosFallbackInputCaptureProofParams = DeterministicEditParams & {
   intermediateText?: unknown;
 };
+type ImagePasteCaptureProofParams = DeterministicEditParams;
 
 type TableCellTextTarget = {
   cellIndex: number;
@@ -394,6 +395,15 @@ function runtimeProofHash(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return `runtime-proof-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function proofPngBytes(): Uint8Array {
+  const binary = atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function runUndoRedoCaptureProof(params?: UndoRedoCaptureProofParams): Record<string, unknown> {
@@ -767,6 +777,97 @@ function runIosFallbackInputCaptureProof(params?: IosFallbackInputCaptureProofPa
     }),
     canUndoAfterFallback: inputHandler.canUndo(),
     canRedoAfterFallback: inputHandler.canRedo(),
+    runtimeIdentity,
+  };
+}
+
+function runImagePasteCaptureProof(params?: ImagePasteCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const charOffset = params?.charOffset == null
+    ? currentPosition.charOffset
+    : boundedInteger(params?.charOffset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const operationId = `runtime-image-paste-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset,
+  };
+  const imageData = proofPngBytes();
+  let insertResult: { ok: boolean; paraIdx?: number; controlIdx?: number } = { ok: false };
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'pasteImage',
+    operation: (bridge) => {
+      insertResult = bridge.insertPicture(
+        sectionIndex,
+        paragraphIndex,
+        charOffset,
+        '',
+        imageData,
+        75,
+        75,
+        1,
+        1,
+        'png',
+        'runtime image paste capture proof',
+      );
+      if (insertResult.ok) {
+        return {
+          sectionIndex,
+          paragraphIndex: (insertResult.paraIdx ?? paragraphIndex) + 1,
+          charOffset: 0,
+        };
+      }
+      return position;
+    },
+    meta: {
+      actionId: 'image-paste-capture-proof-rpc',
+      domain: 'object',
+      refresh: 'full',
+      dirtyScope: 'document',
+    },
+  });
+
+  return {
+    ok: insertResult.ok === true,
+    operation: 'pasteImage',
+    operationId,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset,
+    },
+    target: {
+      paraIdx: insertResult.paraIdx,
+      controlIdx: insertResult.controlIdx,
+    },
+    events: [
+      {
+        eventId: `${operationId}-unsupported`,
+        kind: 'unsupported',
+        mutation: 'pasteImage',
+        sourceHook: 'snapshot_pasteImage',
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['complex_paste'],
+    }),
     runtimeIdentity,
   };
 }
@@ -2249,6 +2350,10 @@ window.addEventListener('message', async (e) => {
       case 'runIosFallbackInputCaptureProof':
         await initPromise;
         reply(runIosFallbackInputCaptureProof(params));
+        break;
+      case 'runImagePasteCaptureProof':
+        await initPromise;
+        reply(runImagePasteCaptureProof(params));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);
