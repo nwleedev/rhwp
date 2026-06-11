@@ -1814,6 +1814,15 @@ export class InputHandler {
     sourceHook: string,
     unsupportedMutation: string,
   ): void {
+    this.recordExternalUnsupportedDirectMutation(category, sourceHook, unsupportedMutation);
+    this.afterEdit();
+  }
+
+  recordExternalUnsupportedDirectMutation(
+    category: CaptureCoverageOperationCategory,
+    sourceHook: string,
+    unsupportedMutation: string,
+  ): void {
     this.captureCoverage.recordDirectMutation({
       category,
       manifestOperationCount: 0,
@@ -1821,7 +1830,6 @@ export class InputHandler {
       unsupportedMutations: [unsupportedMutation],
       verdict: 'unsupported',
     });
-    this.afterEdit();
   }
 
   /** Backspace 처리 */

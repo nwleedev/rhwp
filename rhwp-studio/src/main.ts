@@ -735,6 +735,35 @@ function updateClickHerePropsForProof(params?: ClickHerePropsParams): Record<str
   return result;
 }
 
+function recordFieldMetadataMutationForProof(params?: ClickHerePropsParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  const fieldId = parseClickHereFieldId(params);
+  const fields = wasm.getFieldList();
+  const target = fields.find((field) => field.fieldId === fieldId);
+  if (!target) {
+    throw new Error(`Field id ${fieldId} is unavailable.`);
+  }
+
+  inputHandler.recordExternalUnsupportedDirectMutation(
+    'field_metadata_mutation',
+    'wasm_field_metadata_mutation_proof',
+    'fieldMetadataUpdate',
+  );
+
+  return {
+    ok: true,
+    fieldId,
+    fieldType: target.fieldType,
+    mutation: 'fieldMetadataUpdate',
+  };
+}
+
 // E2E 테스트용 전역 노출 (개발 모드 전용)
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
@@ -1694,6 +1723,10 @@ window.addEventListener('message', async (e) => {
       case 'updateClickHerePropsForProof':
         await initPromise;
         reply(updateClickHerePropsForProof(params));
+        break;
+      case 'recordFieldMetadataMutationForProof':
+        await initPromise;
+        reply(recordFieldMetadataMutationForProof(params));
         break;
       case 'getTableCellTextTargets':
         await initPromise;
