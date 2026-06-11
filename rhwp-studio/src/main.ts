@@ -500,6 +500,35 @@ function resolvePictureObjectTarget(params?: PictureObjectMutationProofParams): 
   const paragraphIndex = currentPosition?.paragraphIndex ?? 0;
   const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
   const charOffset = Math.max(0, paragraphLength);
+
+  if (requestedType === 'shape') {
+    const result = wasm.createShapeControl({
+      sectionIdx: sectionIndex,
+      paraIdx: paragraphIndex,
+      charOffset,
+      width: 5625,
+      height: 5625,
+      horzOffset: 7200,
+      vertOffset: 7200,
+      shapeType: 'rectangle',
+      treatAsChar: false,
+      textWrap: 'InFrontOfText',
+    });
+
+    if (!result.ok || result.paraIdx == null || result.controlIdx == null) {
+      throw new Error('picture object mutation proof could not create a shape target');
+    }
+
+    return {
+      controlIndex: result.controlIdx,
+      createdForProof: true,
+      pageIndex: -1,
+      parentParaIndex: result.paraIdx,
+      sectionIndex,
+      type: 'shape',
+    };
+  }
+
   const imageData = proofPngBytes();
   const result = wasm.insertPicture(
     sectionIndex,
