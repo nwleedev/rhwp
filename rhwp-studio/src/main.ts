@@ -510,7 +510,7 @@ function resolvePictureObjectTarget(params?: PictureObjectMutationProofParams): 
       height: 5625,
       horzOffset: 7200,
       vertOffset: 7200,
-      shapeType: 'textbox',
+      shapeType: 'line',
       treatAsChar: false,
       textWrap: 'InFrontOfText',
     });
