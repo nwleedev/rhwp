@@ -122,6 +122,14 @@ type FootnoteTextParams = {
   text?: unknown;
 };
 
+type ClickHerePropsParams = {
+  editable?: unknown;
+  fieldId?: unknown;
+  guide?: unknown;
+  memo?: unknown;
+  name?: unknown;
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -693,6 +701,38 @@ function resizeTableCellForProof(params?: TableCellResizeParams): Record<string,
     },
     updates,
   };
+}
+
+function parseClickHereFieldId(params?: ClickHerePropsParams): number {
+  const fieldId = Number(params?.fieldId);
+  if (!Number.isInteger(fieldId)) {
+    throw new Error('Field id is required.');
+  }
+
+  return fieldId;
+}
+
+function getClickHereProps(params?: ClickHerePropsParams): Record<string, unknown> {
+  return wasm.getClickHereProps(parseClickHereFieldId(params));
+}
+
+function updateClickHerePropsForProof(params?: ClickHerePropsParams): Record<string, unknown> {
+  const fieldId = parseClickHereFieldId(params);
+  const guide = String(params?.guide ?? '');
+  const memo = String(params?.memo ?? '');
+  const name = String(params?.name ?? '');
+  const editable = Boolean(params?.editable ?? true);
+  const result = wasm.updateClickHereProps(fieldId, guide, memo, name, editable);
+
+  if (result.ok === true) {
+    inputHandler?.commitExternalUnsupportedDirectMutation(
+      'field_metadata_mutation',
+      'wasm_update_click_here_props',
+      'fieldMetadataUpdate',
+    );
+  }
+
+  return result;
 }
 
 // E2E 테스트용 전역 노출 (개발 모드 전용)
@@ -1647,6 +1687,14 @@ window.addEventListener('message', async (e) => {
         reply(result);
         break;
       }
+      case 'getClickHereProps':
+        await initPromise;
+        reply(getClickHereProps(params));
+        break;
+      case 'updateClickHerePropsForProof':
+        await initPromise;
+        reply(updateClickHerePropsForProof(params));
+        break;
       case 'getTableCellTextTargets':
         await initPromise;
         reply(getTableCellTextTargets());

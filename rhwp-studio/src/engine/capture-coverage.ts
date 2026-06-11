@@ -8,6 +8,7 @@ export type CaptureCoverageOperationCategory =
   | 'field_value_replace'
   | 'footnote_text_replace'
   | 'complex_paste'
+  | 'field_metadata_mutation'
   | 'object_mutation'
   | 'page_setting_mutation';
 
@@ -36,7 +37,10 @@ export interface CaptureCoverageRequest {
 
 export interface DirectMutationCoverageDescriptor {
   category: CaptureCoverageOperationCategory;
+  manifestOperationCount?: number;
   sourceHook: string;
+  unsupportedMutations?: string[];
+  verdict?: CaptureCoverageVerdict;
 }
 
 const textCommandTypes = new Set(['insertText', 'deleteText']);
@@ -148,11 +152,11 @@ export class CaptureCoverageCollector {
     this.observations.push({
       category: desc.category,
       evidenceIds: [`runtime-direct-${this.nextEvidenceId++}`],
-      manifestOperationCount: 1,
+      manifestOperationCount: desc.manifestOperationCount ?? 1,
       sourceHook: desc.sourceHook,
       surface: 'wasm_direct_mutation',
-      unsupportedMutations: [],
-      verdict: 'supported_candidate',
+      unsupportedMutations: desc.unsupportedMutations ?? [],
+      verdict: desc.verdict ?? 'supported_candidate',
     });
   }
 

@@ -1809,6 +1809,21 @@ export class InputHandler {
     this.afterEdit();
   }
 
+  commitExternalUnsupportedDirectMutation(
+    category: CaptureCoverageOperationCategory,
+    sourceHook: string,
+    unsupportedMutation: string,
+  ): void {
+    this.captureCoverage.recordDirectMutation({
+      category,
+      manifestOperationCount: 0,
+      sourceHook,
+      unsupportedMutations: [unsupportedMutation],
+      verdict: 'unsupported',
+    });
+    this.afterEdit();
+  }
+
   /** Backspace 처리 */
   private handleBackspace(pos: DocumentPosition, inCell: boolean): void {
     _text.handleBackspace.call(this, pos, inCell);
