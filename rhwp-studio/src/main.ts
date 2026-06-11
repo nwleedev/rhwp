@@ -77,6 +77,9 @@ type IosFallbackInputCaptureProofParams = DeterministicEditParams & {
   intermediateText?: unknown;
 };
 type ImagePasteCaptureProofParams = DeterministicEditParams;
+type InternalPasteCaptureProofParams = DeterministicEditParams & {
+  copyLength?: unknown;
+};
 
 type TableCellTextTarget = {
   cellIndex: number;
@@ -863,6 +866,100 @@ function runImagePasteCaptureProof(params?: ImagePasteCaptureProofParams): Recor
         kind: 'unsupported',
         mutation: 'pasteImage',
         sourceHook: 'snapshot_pasteImage',
+      },
+    ],
+    captureObservations: inputHandler.getCaptureCoverageObservations({
+      categories: ['complex_paste'],
+    }),
+    runtimeIdentity,
+  };
+}
+
+function runInternalPasteCaptureProof(params?: InternalPasteCaptureProofParams): Record<string, unknown> {
+  if (!wasm.hasLoadedDocument()) {
+    throw new Error('문서가 로드되지 않았습니다');
+  }
+  if (!inputHandler) {
+    throw new Error('input handler is unavailable');
+  }
+
+  inputHandler.resetCaptureCoverage();
+
+  const sectionCount = wasm.getSectionCount();
+  const sectionIndex = boundedInteger(params?.sectionIndex, 0, 0, Math.max(0, sectionCount - 1));
+  const currentPosition = inputHandler.getCursorPosition();
+  const paragraphIndex = params?.paragraphIndex == null
+    ? currentPosition.paragraphIndex
+    : boundedInteger(params?.paragraphIndex, 0, 0, Number.MAX_SAFE_INTEGER);
+  const paragraphLength = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+  if (paragraphLength <= 0) {
+    throw new Error('internal paste proof requires a non-empty body paragraph');
+  }
+
+  const requestedCopyLength = params?.copyLength == null
+    ? 4
+    : boundedInteger(params.copyLength, 4, 1, 64);
+  const copyLength = Math.max(1, Math.min(requestedCopyLength, paragraphLength));
+  const pasteOffset = params?.charOffset == null
+    ? paragraphLength
+    : boundedInteger(params?.charOffset, paragraphLength, 0, paragraphLength);
+  const operationId = `runtime-internal-paste-${Date.now().toString(36)}`;
+  const position = {
+    ...currentPosition,
+    sectionIndex,
+    paragraphIndex,
+    charOffset: pasteOffset,
+  };
+  const copyResult = JSON.parse(wasm.copySelection(sectionIndex, paragraphIndex, 0, paragraphIndex, copyLength));
+  if (!copyResult.ok || !wasm.hasInternalClipboard()) {
+    throw new Error('internal paste proof could not prepare internal clipboard');
+  }
+
+  let pasteResult: { ok: boolean; paraIdx?: number; charOffset?: number } = { ok: false };
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'pasteInternal',
+    operation: (bridge) => {
+      const result = bridge.pasteInternal(sectionIndex, paragraphIndex, pasteOffset);
+      pasteResult = JSON.parse(result);
+      if (pasteResult.ok) {
+        return {
+          sectionIndex,
+          paragraphIndex: pasteResult.paraIdx ?? paragraphIndex,
+          charOffset: pasteResult.charOffset ?? pasteOffset,
+        };
+      }
+      return position;
+    },
+    meta: {
+      actionId: 'internal-paste-capture-proof-rpc',
+      domain: 'unknown',
+      refresh: 'full',
+      dirtyScope: 'document',
+    },
+  });
+
+  return {
+    ok: pasteResult.ok === true,
+    operation: 'pasteInternal',
+    operationId,
+    copiedText: copyResult.text,
+    position: {
+      sectionIndex,
+      paragraphIndex,
+      charOffset: pasteOffset,
+    },
+    target: {
+      paraIdx: pasteResult.paraIdx,
+      charOffset: pasteResult.charOffset,
+    },
+    events: [
+      {
+        eventId: `${operationId}-unsupported`,
+        kind: 'unsupported',
+        mutation: 'pasteInternal',
+        sourceHook: 'snapshot_pasteInternal',
       },
     ],
     captureObservations: inputHandler.getCaptureCoverageObservations({
@@ -2354,6 +2451,10 @@ window.addEventListener('message', async (e) => {
       case 'runImagePasteCaptureProof':
         await initPromise;
         reply(runImagePasteCaptureProof(params));
+        break;
+      case 'runInternalPasteCaptureProof':
+        await initPromise;
+        reply(runInternalPasteCaptureProof(params));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);
