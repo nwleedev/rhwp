@@ -105,6 +105,8 @@ pub struct HwpVersion {
 pub struct DocProperties {
     /// 원본 레코드 바이트 (라운드트립 보존용)
     pub raw_data: Option<Vec<u8>>,
+    /// HWPX `Contents/header.xml` 루트의 `version` 값.
+    pub hwpx_hwpml_version: Option<String>,
     /// 구역 개수
     pub section_count: u16,
     /// 페이지 시작 번호

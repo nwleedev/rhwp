@@ -111,6 +111,7 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                 let name = e.name();
                 let local = local_name(name.as_ref());
                 match local {
+                    b"head" => parse_head_attrs(e, &mut doc_props),
                     b"fontface" => {
                         // <hh:fontface lang="HANGUL"> → 언어 그룹 설정
                         for attr in e.attributes().flatten() {
@@ -208,6 +209,17 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
     doc_props.section_count = 1; // content.hpf에서 갱신됨
 
     Ok((doc_info, doc_props))
+}
+
+fn parse_head_attrs(e: &quick_xml::events::BytesStart, props: &mut DocProperties) {
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == b"version" {
+            let version = attr_str(&attr);
+            if !version.is_empty() {
+                props.hwpx_hwpml_version = Some(version);
+            }
+        }
+    }
 }
 
 fn parse_doc_option_linkinfo(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
@@ -379,6 +391,7 @@ fn parse_font(
     let mut name = String::new();
     let mut font_type = 0u8;
     let mut type_info = None;
+    let mut alt_name = None;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
@@ -398,19 +411,24 @@ fn parse_font(
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(ref ce)) => {
-                    if local_name(ce.name().as_ref()) == b"typeInfo" {
+                Ok(Event::Empty(ref ce)) => match local_name(ce.name().as_ref()) {
+                    b"typeInfo" => type_info = Some(parse_font_type_info(ce, &name, font_type)),
+                    b"substFont" => alt_name = parse_subst_font_name(ce),
+                    _ => {}
+                },
+                Ok(Event::Start(ref ce)) => match local_name(ce.name().as_ref()) {
+                    b"typeInfo" => {
                         type_info = Some(parse_font_type_info(ce, &name, font_type));
                     }
-                }
-                Ok(Event::Start(ref ce)) => {
-                    if local_name(ce.name().as_ref()) == b"typeInfo" {
-                        type_info = Some(parse_font_type_info(ce, &name, font_type));
-                    } else {
+                    b"substFont" => {
+                        alt_name = parse_subst_font_name(ce);
+                        skip_element(reader, b"substFont")?;
+                    }
+                    _ => {
                         let tag = local_name(ce.name().as_ref()).to_vec();
                         skip_element(reader, &tag)?;
                     }
-                }
+                },
                 Ok(Event::End(ref ce)) if local_name(ce.name().as_ref()) == b"font" => break,
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(HwpxError::XmlError(e.to_string())),
@@ -425,6 +443,7 @@ fn parse_font(
         let font = Font {
             name,
             alt_type: font_type,
+            alt_name,
             type_info,
             default_name,
             ..Default::default()
@@ -436,6 +455,18 @@ fn parse_font(
     }
 
     Ok(())
+}
+
+fn parse_subst_font_name(e: &quick_xml::events::BytesStart) -> Option<String> {
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == b"face" {
+            let face = attr_str(&attr);
+            if !face.is_empty() {
+                return Some(face);
+            }
+        }
+    }
+    None
 }
 
 fn parse_font_type_info(
@@ -2455,6 +2486,40 @@ mod tests {
             hft.default_name,
             Some("Sinmyeong Gyeonmyeongjo".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_hwpx_font_subst_font_as_alt_name() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:fontfaces itemCnt="1">
+      <hh:fontface lang="HANGUL" fontCnt="1">
+        <hh:font id="0" face="신명 신명조" type="TTF" isEmbedded="0">
+          <hh:substFont face="한컴바탕" type="TTF" isEmbedded="0" binaryItemIDRef=""/>
+        </hh:font>
+      </hh:fontface>
+    </hh:fontfaces>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let font = &doc_info.font_faces[0][0];
+
+        assert_eq!(font.name, "신명 신명조");
+        assert_eq!(font.alt_name, Some("한컴바탕".to_string()));
+    }
+
+    #[test]
+    fn test_parse_hwpx_head_version_into_doc_properties() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" version="1.4">
+  <hh:refList/>
+</hh:head>"##;
+
+        let (_, doc_props) = parse_hwpx_header(xml).unwrap();
+
+        assert_eq!(doc_props.hwpx_hwpml_version, Some("1.4".to_string()));
     }
 
     #[test]

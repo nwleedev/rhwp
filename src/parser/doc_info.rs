@@ -159,6 +159,7 @@ fn parse_document_properties(data: &[u8]) -> Result<DocProperties, DocInfoError>
     let mut r = ByteReader::new(data);
     Ok(DocProperties {
         raw_data: Some(data.to_vec()),
+        hwpx_hwpml_version: None,
         section_count: r.read_u16().unwrap_or(1),
         page_start_num: r.read_u16().unwrap_or(1),
         footnote_start_num: r.read_u16().unwrap_or(1),

@@ -35,6 +35,11 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
 
     // <hh:head> 루트 + 전체 네임스페이스 (parser가 기대하는 접두어 모두 선언)
     let sec_cnt = doc.doc_properties.section_count.max(1).to_string();
+    let hwpml_version = doc
+        .doc_properties
+        .hwpx_hwpml_version
+        .as_deref()
+        .unwrap_or("1.2");
     start_tag_attrs(
         &mut w,
         "hh:head",
@@ -59,7 +64,7 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
                 "xmlns:config",
                 "urn:oasis:names:tc:opendocument:xmlns:config:1.0",
             ),
-            ("version", "1.2"),
+            ("version", hwpml_version),
             ("secCnt", &sec_cnt),
         ],
     )?;
@@ -149,9 +154,14 @@ fn write_fontfaces<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<()
                 ("type", font_type_str(font.alt_type)),
                 ("isEmbedded", "0"),
             ];
-            if let Some(type_info) = font.type_info {
+            if font.type_info.is_some() || font.alt_name.is_some() {
                 start_tag_attrs(w, "hh:font", &attrs)?;
-                write_font_type_info(w, type_info)?;
+                if let Some(alt_name) = font.alt_name.as_deref() {
+                    write_subst_font(w, font, alt_name)?;
+                }
+                if let Some(type_info) = font.type_info {
+                    write_font_type_info(w, type_info)?;
+                }
                 end_tag(w, "hh:font")?;
             } else {
                 empty_tag(w, "hh:font", &attrs)?;
@@ -164,6 +174,23 @@ fn write_fontfaces<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<()
 }
 
 static EMPTY_FONT_VEC: Vec<Font> = Vec::new();
+
+fn write_subst_font<W: Write>(
+    w: &mut Writer<W>,
+    font: &Font,
+    alt_name: &str,
+) -> Result<(), SerializeError> {
+    empty_tag(
+        w,
+        "hh:substFont",
+        &[
+            ("face", alt_name),
+            ("type", font_type_str(font.alt_type)),
+            ("isEmbedded", "0"),
+            ("binaryItemIDRef", ""),
+        ],
+    )
+}
 
 fn write_font_type_info<W: Write>(
     w: &mut Writer<W>,
@@ -1501,6 +1528,57 @@ mod tests {
         let ctx = SerializeContext::collect_from_document(&doc);
         let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
         assert_eq!(xml.matches("<hh:fontface ").count(), 7);
+    }
+
+    #[test]
+    fn write_header_preserves_subst_font_alt_name() {
+        let header_xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:fontfaces itemCnt="1">
+      <hh:fontface lang="HANGUL" fontCnt="1">
+        <hh:font id="0" face="신명 신명조" type="TTF" isEmbedded="0">
+          <hh:substFont face="한컴바탕" type="TTF" isEmbedded="0" binaryItemIDRef=""/>
+        </hh:font>
+      </hh:fontface>
+    </hh:fontfaces>
+  </hh:refList>
+</hh:head>"##;
+        let (doc_info, doc_properties) =
+            crate::parser::hwpx::header::parse_hwpx_header(header_xml).expect("parse header");
+        let doc = Document {
+            doc_info,
+            doc_properties,
+            ..Document::default()
+        };
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(
+                r#"<hh:substFont face="한컴바탕" type="TTF" isEmbedded="0" binaryItemIDRef=""/>"#
+            ),
+            "substFont should survive header serialization: {xml}"
+        );
+    }
+
+    #[test]
+    fn write_header_preserves_hwpml_version() {
+        let doc = Document {
+            doc_properties: DocProperties {
+                hwpx_hwpml_version: Some("1.4".to_string()),
+                section_count: 1,
+                ..DocProperties::default()
+            },
+            ..Document::default()
+        };
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(r#"version="1.4""#),
+            "version should survive: {xml}"
+        );
     }
 
     #[test]

@@ -448,3 +448,81 @@ fn issue_1050_footnote_text_edit_hwpx_reload_contains_inserted_text() {
         "exported HWPX reload should render inserted footnote text"
     );
 }
+
+#[test]
+fn issue_1050_footnote_01_hwpx_export_reload_svg_matches_without_edit() {
+    let mut doc = load("samples/hwpx/footnote-01.hwpx");
+    let preview_svgs: Vec<String> = (0..doc.page_count())
+        .map(|page| page_svg(&doc, page))
+        .collect();
+    let exported = doc.export_hwpx_native().expect("export hwpx");
+    let reloaded =
+        rhwp::wasm_api::HwpDocument::from_bytes(&exported).expect("reload exported hwpx");
+    let reloaded_svgs: Vec<String> = (0..reloaded.page_count())
+        .map(|page| page_svg(&reloaded, page))
+        .collect();
+
+    assert_eq!(
+        preview_svgs.len(),
+        reloaded_svgs.len(),
+        "preview and reload page count must match"
+    );
+    for (page, (preview, reload)) in preview_svgs.iter().zip(reloaded_svgs.iter()).enumerate() {
+        assert_eq!(
+            svg_text_seq(preview),
+            svg_text_seq(reload),
+            "page {} text sequence must match without edit",
+            page
+        );
+        assert_eq!(preview, reload, "page {} svg must match without edit", page);
+    }
+}
+
+#[test]
+fn issue_1050_footnote_text_edit_hwpx_reload_svg_matches_preview() {
+    let mut doc = load("samples/hwpx/footnote-01.hwpx");
+    let (section_idx, para_idx, control_idx) = first_footnote_target(&doc);
+    let info = doc
+        .get_footnote_info_native(section_idx, para_idx, control_idx)
+        .expect("footnote info");
+    let info: serde_json::Value = serde_json::from_str(&info).expect("footnote info json");
+    let old_value = info["texts"][0].as_str().expect("first footnote text");
+    doc.insert_text_in_footnote_native(
+        section_idx,
+        para_idx,
+        control_idx,
+        0,
+        old_value.chars().count(),
+        " footnote-proof",
+    )
+    .expect("insert text in footnote");
+
+    let preview_svgs: Vec<String> = (0..doc.page_count())
+        .map(|page| page_svg(&doc, page))
+        .collect();
+    let exported = doc.export_hwpx_native().expect("export hwpx");
+    let reloaded =
+        rhwp::wasm_api::HwpDocument::from_bytes(&exported).expect("reload exported hwpx");
+    let reloaded_svgs: Vec<String> = (0..reloaded.page_count())
+        .map(|page| page_svg(&reloaded, page))
+        .collect();
+
+    assert_eq!(
+        preview_svgs.len(),
+        reloaded_svgs.len(),
+        "edited preview and reload page count must match"
+    );
+    for (page, (preview, reload)) in preview_svgs.iter().zip(reloaded_svgs.iter()).enumerate() {
+        assert_eq!(
+            svg_text_seq(preview),
+            svg_text_seq(reload),
+            "page {} text sequence must match after footnote edit",
+            page
+        );
+        assert_eq!(
+            preview, reload,
+            "page {} svg must match after footnote edit",
+            page
+        );
+    }
+}
