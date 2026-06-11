@@ -6453,7 +6453,8 @@ impl DocumentCore {
         paragraph
             .controls
             .insert(insert_idx, Control::Footnote(Box::new(footnote)));
-        paragraph.ctrl_data_records.insert(insert_idx, None);
+        let ctrl_data_insert_idx = insert_idx.min(paragraph.ctrl_data_records.len());
+        paragraph.ctrl_data_records.insert(ctrl_data_insert_idx, None);
 
         // char_offsets 조정: char_offset 위치에 8바이트 갭 생성
         // char_offsets[i]는 텍스트 i번째 문자의 UTF-16 오프셋 (컨트롤은 갭으로 표현)
@@ -6688,7 +6689,8 @@ impl DocumentCore {
         paragraph
             .controls
             .insert(insert_idx, Control::Endnote(Box::new(endnote)));
-        paragraph.ctrl_data_records.insert(insert_idx, None);
+        let ctrl_data_insert_idx = insert_idx.min(paragraph.ctrl_data_records.len());
+        paragraph.ctrl_data_records.insert(ctrl_data_insert_idx, None);
 
         if !paragraph.char_offsets.is_empty() {
             let text_len = paragraph.text.chars().count();
