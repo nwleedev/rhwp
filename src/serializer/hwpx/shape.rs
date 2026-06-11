@@ -120,6 +120,8 @@ pub fn write_line<W: Write>(w: &mut Writer<W>, line: &LineShape) -> Result<(), S
     write_sz(w, c)?;
     write_pos(w, c)?;
     write_out_margin(w, c)?;
+    empty_tag(w, "hc:startPt", &[("x", &sx), ("y", &sy)])?;
+    empty_tag(w, "hc:endPt", &[("x", &ex), ("y", &ey)])?;
 
     end_tag(w, "hp:line")?;
     Ok(())
@@ -447,6 +449,8 @@ mod tests {
         assert!(xml.contains(r#"startY="200""#));
         assert!(xml.contains(r#"endX="300""#));
         assert!(xml.contains(r#"endY="400""#));
+        assert!(xml.contains(r#"<hc:startPt x="100" y="200"/>"#));
+        assert!(xml.contains(r#"<hc:endPt x="300" y="400"/>"#));
     }
 
     #[test]
