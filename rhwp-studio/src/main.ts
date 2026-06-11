@@ -226,10 +226,11 @@ function summarizeHeaderFooter(sectionIndex: number, isHeader: boolean, applyTo:
   const raw = JSON.parse(wasm.getHeaderFooter(sectionIndex, isHeader, applyTo)) as Record<string, unknown>;
   if (!raw.exists) return raw;
   const text = typeof raw.text === 'string' ? raw.text : '';
+  const normalizedText = text.replace(/\s+/g, '');
   const summary: Record<string, unknown> = { ...raw };
   delete summary.text;
-  summary.charCount = text.length;
-  summary.lineCount = text.length === 0 ? 0 : text.split('\n').length;
+  summary.charCount = normalizedText.length;
+  summary.lineCount = normalizedText.length === 0 ? 0 : text.split('\n').length;
   return summary;
 }
 

@@ -6,7 +6,7 @@ use crate::document_core::helpers::{
 };
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
-use crate::model::control::Control;
+use crate::model::control::{AutoNumber, AutoNumberType, Control};
 use crate::model::event::DocumentEvent;
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::paragraph::Paragraph;
@@ -868,8 +868,31 @@ impl DocumentCore {
         char_offset: usize,
         field_type: u8,
     ) -> Result<String, HwpError> {
+        if field_type == 1 {
+            let hf_para =
+                self.get_hf_paragraph_mut(section_idx, is_header, apply_to, hf_para_idx)?;
+            insert_page_auto_number_in_paragraph(hf_para, char_offset);
+
+            self.reflow_hf_paragraph(section_idx, is_header, apply_to, hf_para_idx);
+
+            self.document.sections[section_idx].raw_stream = None;
+            self.mark_section_dirty(section_idx);
+            self.paginate_if_needed();
+
+            let new_offset = char_offset + 1;
+            self.event_log.push(DocumentEvent::TextInserted {
+                section: section_idx,
+                para: 0,
+                offset: char_offset,
+                len: 1,
+            });
+            return Ok(super::super::helpers::json_ok_with(&format!(
+                "\"charOffset\":{}",
+                new_offset
+            )));
+        }
+
         let marker = match field_type {
-            1 => "\u{0015}", // 현재 쪽번호
             2 => "\u{0016}", // 총 쪽수
             3 => "\u{0017}", // 파일 이름
             _ => {
@@ -1070,6 +1093,64 @@ impl DocumentCore {
     }
 }
 
+fn insert_page_auto_number_in_paragraph(paragraph: &mut Paragraph, char_offset: usize) {
+    let text_len = paragraph.text.chars().count();
+    let safe_offset = char_offset.min(text_len);
+    let control_idx = paragraph
+        .control_text_positions()
+        .into_iter()
+        .take_while(|position| *position <= safe_offset)
+        .count();
+    paragraph.insert_text_at(safe_offset, " ");
+
+    let insert_pos = paragraph
+        .char_offsets
+        .get(safe_offset)
+        .copied()
+        .unwrap_or(0);
+    for offset in paragraph.char_offsets.iter_mut().skip(safe_offset + 1) {
+        *offset = offset.saturating_add(8);
+    }
+    paragraph.char_count = paragraph.char_count.saturating_add(8);
+    for char_shape in &mut paragraph.char_shapes {
+        if char_shape.start_pos > insert_pos {
+            char_shape.start_pos = char_shape.start_pos.saturating_add(8);
+        }
+    }
+    for line_seg in &mut paragraph.line_segs {
+        if line_seg.text_start > insert_pos {
+            line_seg.text_start = line_seg.text_start.saturating_add(8);
+        }
+    }
+    for range_tag in &mut paragraph.range_tags {
+        if range_tag.start > insert_pos {
+            range_tag.start = range_tag.start.saturating_add(8);
+        }
+        if range_tag.end > insert_pos {
+            range_tag.end = range_tag.end.saturating_add(8);
+        }
+    }
+
+    paragraph.controls.insert(
+        control_idx,
+        Control::AutoNumber(AutoNumber {
+            number_type: AutoNumberType::Page,
+            format: 0,
+            superscript: false,
+            assigned_number: 0,
+            number: 0,
+            user_symbol: '\0',
+            prefix_char: '\0',
+            suffix_char: '\0',
+        }),
+    );
+    for field_range in &mut paragraph.field_ranges {
+        if field_range.control_idx >= control_idx {
+            field_range.control_idx += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1168,6 +1249,69 @@ mod tests {
 
         let result = core.get_header_footer_native(0, true, 0).unwrap();
         assert!(result.contains("Hello"));
+    }
+
+    #[test]
+    fn test_insert_page_field_in_header_materializes_auto_number_control() {
+        let mut core = make_test_core();
+        core.create_header_footer_native(0, true, 0).unwrap();
+        core.insert_text_in_header_footer_native(0, true, 0, 0, 0, "AB")
+            .unwrap();
+
+        let result = core.insert_field_in_hf_native(0, true, 0, 0, 1, 1).unwrap();
+        assert!(result.contains("\"charOffset\":2"));
+
+        let header_para = match &core.document.sections[0].paragraphs[0].controls[0] {
+            Control::Header(header) => &header.paragraphs[0],
+            other => panic!("expected header control, got {other:?}"),
+        };
+        assert_eq!(header_para.text, "A B");
+        assert_eq!(header_para.char_offsets, vec![0, 1, 10]);
+        assert_eq!(header_para.char_count, 11);
+        assert!(
+            matches!(
+                header_para.controls.first(),
+                Some(Control::AutoNumber(AutoNumber {
+                    number_type: AutoNumberType::Page,
+                    ..
+                }))
+            ),
+            "page field insertion should materialize an AutoNumber(Page) control"
+        );
+    }
+
+    #[test]
+    fn test_insert_page_field_in_header_serializes_as_hwpx_auto_num() {
+        let mut core = make_test_core();
+        core.create_header_footer_native(0, true, 0).unwrap();
+        core.insert_text_in_header_footer_native(0, true, 0, 0, 0, "AB")
+            .unwrap();
+        core.insert_field_in_hf_native(0, true, 0, 0, 1, 1).unwrap();
+
+        let mut ctx = crate::serializer::hwpx::context::SerializeContext::collect_from_document(
+            &core.document,
+        );
+        let xml = String::from_utf8(
+            crate::serializer::hwpx::section::write_section(
+                &core.document.sections[0],
+                &core.document,
+                0,
+                &mut ctx,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:autoNum num="0" numType="PAGE">"#),
+            "inserted page field should be serialized as HWPX autoNum: {}",
+            xml
+        );
+        assert!(
+            !xml.contains('\u{0015}'),
+            "HWPX should not persist the runtime-only page marker char: {}",
+            xml
+        );
     }
 
     #[test]
