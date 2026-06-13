@@ -1182,10 +1182,14 @@ mod hwpx_export_preservation_tests {
         );
         assert!(!zip_has_entry(&exported, "Contents/section0.xml"));
         assert!(!zip_has_entry(&exported, "Contents/section1.xml"));
-        assert!(String::from_utf8_lossy(&read_zip_entry(&exported, "Contents/body-z.xml"))
-            .contains("spine-first-section"));
-        assert!(String::from_utf8_lossy(&read_zip_entry(&exported, "Contents/body-a.xml"))
-            .contains("spine-second-section"));
+        assert!(
+            String::from_utf8_lossy(&read_zip_entry(&exported, "Contents/body-z.xml"))
+                .contains("spine-first-section")
+        );
+        assert!(
+            String::from_utf8_lossy(&read_zip_entry(&exported, "Contents/body-a.xml"))
+                .contains("spine-second-section")
+        );
     }
 
     #[test]

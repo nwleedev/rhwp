@@ -112,7 +112,7 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
     if info.section_files.is_empty() {
         let mut section_items: Vec<_> = all_items
             .iter()
-            .filter(|(_, href, mt, _)| mt == "application/xml" && href.contains("section"))
+            .filter(|(_, href, mt, _)| is_section_manifest_fallback_item(href, mt))
             .collect();
         section_items.sort_by(|a, b| a.1.cmp(&b.1));
         info.section_files = section_items
@@ -154,6 +154,21 @@ fn is_section_spine_item(href: &str, media_type: &str) -> bool {
         "contents/header.xml" | "settings.xml" | "version.xml"
     ) && !lower_href.contains("masterpage")
         && !lower_href.starts_with("meta-inf/")
+}
+
+fn is_section_manifest_fallback_item(href: &str, media_type: &str) -> bool {
+    if media_type != "application/xml" {
+        return false;
+    }
+
+    let lower_href = href.to_ascii_lowercase();
+    if !lower_href.starts_with("contents/") || !lower_href.ends_with(".xml") {
+        return false;
+    }
+
+    let file_name = lower_href.rsplit('/').next().unwrap_or(lower_href.as_str());
+
+    file_name.starts_with("section")
 }
 
 fn collect_master_page_items(all_items: &[(String, String, String, bool)]) -> Vec<PackageItem> {
@@ -333,6 +348,23 @@ mod tests {
             info.section_files,
             vec!["Contents/body-z.xml", "Contents/body-a.xml"]
         );
+    }
+
+    #[test]
+    fn test_parse_content_hpf_manifest_fallback_does_not_match_section_substring() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:manifest>
+    <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
+    <opf:item id="intersection" href="Contents/intersection-note.xml" media-type="application/xml"/>
+    <opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/>
+  </opf:manifest>
+  <opf:spine/>
+</opf:package>"#;
+
+        let info = parse_content_hpf(xml).unwrap();
+
+        assert_eq!(info.section_files, vec!["Contents/section0.xml"]);
     }
 
     #[test]
