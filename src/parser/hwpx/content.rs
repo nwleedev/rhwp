@@ -312,6 +312,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_content_hpf_uses_spine_order_not_manifest_filename_order() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:manifest>
+    <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
+    <opf:item id="body2" href="Contents/body-a.xml" media-type="application/xml"/>
+    <opf:item id="body1" href="Contents/body-z.xml" media-type="application/xml"/>
+  </opf:manifest>
+  <opf:spine>
+    <opf:itemref idref="header" linear="yes"/>
+    <opf:itemref idref="body1" linear="yes"/>
+    <opf:itemref idref="body2" linear="yes"/>
+  </opf:spine>
+</opf:package>"#;
+
+        let info = parse_content_hpf(xml).unwrap();
+
+        assert_eq!(
+            info.section_files,
+            vec!["Contents/body-z.xml", "Contents/body-a.xml"]
+        );
+    }
+
+    #[test]
     fn test_parse_empty_content() {
         let xml = r#"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:manifest/><opf:spine/></opf:package>"#;
         let info = parse_content_hpf(xml).unwrap();

@@ -987,6 +987,12 @@ mod hwpx_export_preservation_tests {
         out
     }
 
+    fn zip_has_entry(bytes: &[u8], path: &str) -> bool {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip");
+        let has_entry = archive.by_name(path).is_ok();
+        has_entry
+    }
+
     fn insert_xml_comment(xml: &[u8], marker: &str) -> Vec<u8> {
         let xml = std::str::from_utf8(xml).expect("utf8 xml");
         let comment = format!("<!--{}-->", marker);
@@ -1056,6 +1062,55 @@ mod hwpx_export_preservation_tests {
         out.into_inner()
     }
 
+    fn hwpx_with_nonlexical_multi_section_spine(bytes: &[u8]) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip");
+        let mut out = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut out);
+            for idx in 0..archive.len() {
+                let mut entry = archive.by_index(idx).expect("entry");
+                let name = entry.name().to_string();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).expect("read entry");
+
+                let next_name = match name.as_str() {
+                    "Contents/section0.xml" => "Contents/body-z.xml".to_string(),
+                    "Contents/section1.xml" => "Contents/body-a.xml".to_string(),
+                    _ => name.clone(),
+                };
+                let data = match name.as_str() {
+                    "Contents/section0.xml" => insert_xml_comment(&data, "spine-first-section"),
+                    "Contents/section1.xml" => insert_xml_comment(&data, "spine-second-section"),
+                    "Contents/content.hpf" => {
+                        let xml = String::from_utf8(data).expect("content.hpf utf8");
+                        let xml = xml
+                            .replace("Contents/section0.xml", "Contents/body-z.xml")
+                            .replace("Contents/section1.xml", "Contents/body-a.xml");
+                        let section0_item = r#"<opf:item id="section0" href="Contents/body-z.xml" media-type="application/xml"/>"#;
+                        let section1_item = r#"<opf:item id="section1" href="Contents/body-a.xml" media-type="application/xml"/>"#;
+                        let manifest_in_spine_order = format!("{}{}", section0_item, section1_item);
+                        assert!(
+                            xml.contains(&manifest_in_spine_order),
+                            "generated content.hpf shape changed"
+                        );
+                        xml.replace(
+                            &manifest_in_spine_order,
+                            &format!("{}{}", section1_item, section0_item),
+                        )
+                        .into_bytes()
+                    }
+                    _ => data,
+                };
+
+                let opts = SimpleFileOptions::default().compression_method(entry.compression());
+                writer.start_file(next_name, opts).expect("start file");
+                writer.write_all(&data).expect("write file");
+            }
+            writer.finish().expect("finish zip");
+        }
+        out.into_inner()
+    }
+
     #[test]
     fn no_edit_hwpx_export_preserves_document_xml_entries() {
         let mut doc = Document::default();
@@ -1098,6 +1153,39 @@ mod hwpx_export_preservation_tests {
             .expect("exported content utf8");
         assert!(exported_content.contains("Contents/body-0001.xml"));
         assert!(!exported_content.contains("Contents/section0.xml"));
+    }
+
+    #[test]
+    fn no_edit_hwpx_export_preserves_multi_section_spine_order_and_hrefs() {
+        let mut doc = Document::default();
+        doc.sections
+            .push(crate::model::document::Section::default());
+        doc.sections
+            .push(crate::model::document::Section::default());
+        let source = serialize_hwpx(&doc).expect("source hwpx");
+        let shuffled = hwpx_with_nonlexical_multi_section_spine(&source);
+
+        let core = DocumentCore::from_bytes(&shuffled).expect("parse shuffled hwpx");
+        let exported = core.export_hwpx_native().expect("export no edit");
+
+        assert_eq!(
+            read_zip_entry(&exported, "Contents/content.hpf"),
+            read_zip_entry(&shuffled, "Contents/content.hpf")
+        );
+        assert_eq!(
+            read_zip_entry(&exported, "Contents/body-z.xml"),
+            read_zip_entry(&shuffled, "Contents/body-z.xml")
+        );
+        assert_eq!(
+            read_zip_entry(&exported, "Contents/body-a.xml"),
+            read_zip_entry(&shuffled, "Contents/body-a.xml")
+        );
+        assert!(!zip_has_entry(&exported, "Contents/section0.xml"));
+        assert!(!zip_has_entry(&exported, "Contents/section1.xml"));
+        assert!(String::from_utf8_lossy(&read_zip_entry(&exported, "Contents/body-z.xml"))
+            .contains("spine-first-section"));
+        assert!(String::from_utf8_lossy(&read_zip_entry(&exported, "Contents/body-a.xml"))
+            .contains("spine-second-section"));
     }
 
     #[test]
