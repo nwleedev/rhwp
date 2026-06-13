@@ -20,7 +20,7 @@ pub mod utils;
 use std::collections::{HashMap, HashSet};
 
 use crate::model::bin_data::{BinData, BinDataContent, BinDataType};
-use crate::model::document::{Document, FileHeader, HwpVersion, Section};
+use crate::model::document::{Document, FileHeader, HwpVersion, Preview, PreviewImage, Section};
 
 fn is_internal_bin_data_href(href: &str) -> bool {
     let href = href.to_ascii_lowercase();
@@ -135,6 +135,22 @@ fn attach_hwpx_master_page(
             false
         }
     }
+}
+
+fn extract_hwpx_preview(reader: &mut reader::HwpxReader) -> Option<Preview> {
+    let text = reader.read_file("Preview/PrvText.txt").ok();
+    let image_data = reader.read_file_bytes("Preview/PrvImage.png").ok();
+
+    if text.is_none() && image_data.is_none() {
+        return None;
+    }
+
+    let image = image_data.map(|data| PreviewImage {
+        format: super::detect_image_format(&data),
+        data,
+    });
+
+    Some(Preview { image, text })
 }
 
 /// HWPX 파일 바이트 데이터를 파싱하여 Document IR로 변환
@@ -310,17 +326,23 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
     // fallback 으로 보강. cfb_writer (`src/serializer/cfb_writer.rs:155`)
     // 가 Document::extra_streams 를 그대로 OLE 스트림으로 작성.
     let contract = contract_streams::extract_contract_streams(&mut reader);
+    let preview = extract_hwpx_preview(&mut reader);
 
     let mut doc = Document {
         header: model_header,
         doc_properties,
         doc_info,
         sections,
-        preview: None,
+        preview,
         bin_data_content,
         extra_streams: contract.streams,
         is_hwp3_variant: false,
     };
+    for path in ["version.xml", "settings.xml", "Contents/content.hpf"] {
+        if let Ok(data) = reader.read_file_bytes(path) {
+            doc.preserve_hwpx_package_entry(path, data);
+        }
+    }
 
     // [Task #873] BinData Link 타입 의 외부 file path 영역 영역 Picture.external_path 영역
     // 전달. 이후 model::document::populate_external_images_from_dir (Task #741) 가 같은

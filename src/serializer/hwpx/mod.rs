@@ -49,7 +49,11 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     z.write_stored("mimetype", b"application/hwp+zip")?;
 
     // 2. version.xml
-    z.write_deflated("version.xml", VERSION_XML.as_bytes())?;
+    z.write_deflated(
+        "version.xml",
+        doc.hwpx_package_entry("version.xml")
+            .unwrap_or(VERSION_XML.as_bytes()),
+    )?;
 
     // 3. Contents/header.xml — Stage 1 동적 생성 (IR 기반)
     let header_xml = header::write_header(doc, &ctx)?;
@@ -65,11 +69,31 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     }
 
     // 5. Preview/PrvText.txt + Preview/PrvImage.png
-    z.write_deflated("Preview/PrvText.txt", PRV_TEXT)?;
-    z.write_deflated("Preview/PrvImage.png", PRV_IMAGE_PNG)?;
+    if let Some(text) = doc
+        .preview
+        .as_ref()
+        .and_then(|preview| preview.text.as_ref())
+    {
+        z.write_deflated("Preview/PrvText.txt", text.as_bytes())?;
+    } else {
+        z.write_deflated("Preview/PrvText.txt", PRV_TEXT)?;
+    }
+    if let Some(image) = doc
+        .preview
+        .as_ref()
+        .and_then(|preview| preview.image.as_ref())
+    {
+        z.write_deflated("Preview/PrvImage.png", &image.data)?;
+    } else {
+        z.write_deflated("Preview/PrvImage.png", PRV_IMAGE_PNG)?;
+    }
 
     // 6. settings.xml
-    z.write_deflated("settings.xml", SETTINGS_XML.as_bytes())?;
+    z.write_deflated(
+        "settings.xml",
+        doc.hwpx_package_entry("settings.xml")
+            .unwrap_or(SETTINGS_XML.as_bytes()),
+    )?;
 
     // 7. META-INF/container.rdf
     z.write_deflated("META-INF/container.rdf", META_INF_CONTAINER_RDF.as_bytes())?;
@@ -104,7 +128,10 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
         })
         .collect();
     let content_hpf = content::write_content_hpf(&section_hrefs, &content_bin_entries)?;
-    z.write_deflated("Contents/content.hpf", &content_hpf)?;
+    z.write_deflated(
+        "Contents/content.hpf",
+        preserved_content_hpf(doc, &content_hpf),
+    )?;
 
     // 10. META-INF/container.xml
     z.write_deflated("META-INF/container.xml", META_INF_CONTAINER_XML.as_bytes())?;
@@ -123,6 +150,51 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     assert_bin_data_3way(&bin_entries, &zip_bin_entries)?;
 
     z.finish()
+}
+
+fn preserved_content_hpf<'a>(doc: &'a Document, generated: &'a [u8]) -> &'a [u8] {
+    match doc.hwpx_package_entry("Contents/content.hpf") {
+        Some(preserved) if content_hpf_topology_matches(preserved, generated) => preserved,
+        _ => generated,
+    }
+}
+
+fn content_hpf_topology_matches(preserved: &[u8], generated: &[u8]) -> bool {
+    let Ok(preserved_xml) = std::str::from_utf8(preserved) else {
+        return false;
+    };
+    let Ok(generated_xml) = std::str::from_utf8(generated) else {
+        return false;
+    };
+    let Ok(preserved_info) = crate::parser::hwpx::content::parse_content_hpf(preserved_xml) else {
+        return false;
+    };
+    let Ok(generated_info) = crate::parser::hwpx::content::parse_content_hpf(generated_xml) else {
+        return false;
+    };
+
+    preserved_info.section_files == generated_info.section_files
+        && package_items_match(
+            &preserved_info.master_page_items,
+            &generated_info.master_page_items,
+        )
+        && package_items_match(
+            &preserved_info.bin_data_items,
+            &generated_info.bin_data_items,
+        )
+}
+
+fn package_items_match(
+    left: &[crate::parser::hwpx::content::PackageItem],
+    right: &[crate::parser::hwpx::content::PackageItem],
+) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(left, right)| {
+            left.id == right.id
+                && left.href == right.href
+                && left.media_type == right.media_type
+                && left.is_embedded == right.is_embedded
+        })
 }
 
 /// 3-way BinData 동기화 단언: `ctx.bin_data_entries()`, content.hpf manifest,
@@ -610,6 +682,119 @@ mod tests {
         for r in &required {
             assert!(names.iter().any(|n| n == r), "missing required file: {}", r);
         }
+    }
+
+    #[test]
+    fn hwpx_preview_entries_roundtrip_from_document_model() {
+        use crate::model::document::{Preview, PreviewImage, PreviewImageFormat};
+
+        let mut expected_image = static_assets::PRV_IMAGE_PNG.to_vec();
+        expected_image.extend_from_slice(b"preserved-preview-marker");
+        let expected_text = "원본 미리보기\r\npreview text".to_string();
+
+        let doc = Document {
+            preview: Some(Preview {
+                text: Some(expected_text.clone()),
+                image: Some(PreviewImage {
+                    format: PreviewImageFormat::Png,
+                    data: expected_image.clone(),
+                }),
+            }),
+            ..Document::default()
+        };
+
+        let bytes = serialize_hwpx(&doc).expect("serialize");
+        let cursor = std::io::Cursor::new(&bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+
+        let mut text_entry = archive
+            .by_name("Preview/PrvText.txt")
+            .expect("preview text");
+        let mut actual_text = Vec::new();
+        std::io::Read::read_to_end(&mut text_entry, &mut actual_text).expect("read text");
+        drop(text_entry);
+
+        let mut image_entry = archive
+            .by_name("Preview/PrvImage.png")
+            .expect("preview image");
+        let mut actual_image = Vec::new();
+        std::io::Read::read_to_end(&mut image_entry, &mut actual_image).expect("read image");
+        drop(image_entry);
+
+        assert_eq!(actual_text, expected_text.as_bytes());
+        assert_eq!(actual_image, expected_image);
+
+        let parsed = parse_hwpx(&bytes).expect("parse back");
+        let preview = parsed.preview.expect("preview should be parsed");
+        assert_eq!(preview.text.as_deref(), Some(expected_text.as_str()));
+        assert_eq!(
+            preview.image.as_ref().map(|image| image.data.as_slice()),
+            Some(expected_image.as_slice())
+        );
+    }
+
+    #[test]
+    fn hwpx_preserved_package_entries_roundtrip_when_topology_matches() {
+        use std::io::Read;
+
+        let version_xml = br#"<?xml version="1.0" encoding="UTF-8"?><version app="original"/>"#;
+        let settings_xml =
+            br#"<?xml version="1.0" encoding="UTF-8"?><config:config-item-set preserved="1"/>"#;
+        let content_hpf = br#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:metadata><opf:title>preserved metadata</opf:title></opf:metadata>
+  <opf:manifest>
+    <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
+    <opf:item id="settings" href="settings.xml" media-type="application/xml"/>
+  </opf:manifest>
+  <opf:spine><opf:itemref idref="header"/></opf:spine>
+</opf:package>"#;
+
+        let mut doc = Document::default();
+        doc.preserve_hwpx_package_entry("version.xml", version_xml.to_vec());
+        doc.preserve_hwpx_package_entry("settings.xml", settings_xml.to_vec());
+        doc.preserve_hwpx_package_entry("Contents/content.hpf", content_hpf.to_vec());
+
+        let bytes = serialize_hwpx(&doc).expect("serialize");
+        let cursor = std::io::Cursor::new(&bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+
+        let mut actual_version = Vec::new();
+        archive
+            .by_name("version.xml")
+            .expect("version")
+            .read_to_end(&mut actual_version)
+            .expect("read version");
+        let mut actual_settings = Vec::new();
+        archive
+            .by_name("settings.xml")
+            .expect("settings")
+            .read_to_end(&mut actual_settings)
+            .expect("read settings");
+        let mut actual_content = Vec::new();
+        archive
+            .by_name("Contents/content.hpf")
+            .expect("content")
+            .read_to_end(&mut actual_content)
+            .expect("read content");
+
+        assert_eq!(actual_version, version_xml);
+        assert_eq!(actual_settings, settings_xml);
+        assert_eq!(actual_content, content_hpf);
+
+        let parsed = parse_hwpx(&bytes).expect("parse back");
+        assert_eq!(
+            parsed.hwpx_package_entry("version.xml"),
+            Some(version_xml.as_slice())
+        );
+        assert_eq!(
+            parsed.hwpx_package_entry("settings.xml"),
+            Some(settings_xml.as_slice())
+        );
+        assert_eq!(
+            parsed.hwpx_package_entry("Contents/content.hpf"),
+            Some(content_hpf.as_slice())
+        );
     }
 
     #[test]

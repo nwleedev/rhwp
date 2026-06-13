@@ -235,6 +235,30 @@ pub struct SectionDef {
 }
 
 impl Document {
+    const HWPX_PACKAGE_ENTRY_PREFIX: &'static str = "__rhwp_hwpx_package_entry__/";
+
+    /// HWPX 원본 패키지 엔트리를 exportHwpx 라운드트립 보존용으로 기록한다.
+    pub fn preserve_hwpx_package_entry(&mut self, path: &str, data: Vec<u8>) {
+        let key = format!("{}{}", Self::HWPX_PACKAGE_ENTRY_PREFIX, path);
+        if let Some((_, existing)) = self
+            .extra_streams
+            .iter_mut()
+            .find(|(entry_path, _)| entry_path == &key)
+        {
+            *existing = data;
+            return;
+        }
+        self.extra_streams.push((key, data));
+    }
+
+    /// 보존된 HWPX 원본 패키지 엔트리를 조회한다.
+    pub fn hwpx_package_entry(&self, path: &str) -> Option<&[u8]> {
+        let key = format!("{}{}", Self::HWPX_PACKAGE_ENTRY_PREFIX, path);
+        self.extra_streams
+            .iter()
+            .find_map(|(entry_path, data)| (entry_path == &key).then_some(data.as_slice()))
+    }
+
     /// 외부 이미지 binDataId가 이미 로드되었는지 확인한다.
     ///
     /// 렌더러는 `bin_data_id - 1` 인덱스를 먼저 조회하므로, 저장소 엔트리의

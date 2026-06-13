@@ -154,6 +154,9 @@ fn write_hwp_cfb(
 
     // 6. 추가 스트림 (Scripts, DocOptions 등 — 라운드트립 보존)
     for (path, data) in extra_streams {
+        if !path.starts_with('/') {
+            continue;
+        }
         streams.push((path.clone(), data.clone()));
     }
 
