@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::model::control::Control;
 use crate::model::document::Document;
+use crate::model::paragraph::Paragraph;
 use crate::serializer::SerializeError;
 
 /// 양방향 ID 풀 — 등록된 ID와 참조된 ID를 추적한다.
@@ -125,10 +126,9 @@ impl SerializeContext {
         // 인라인 컨트롤(표/그림 등)의 borderFillIDRef를 사전 등록하여
         // assert_all_refs_resolved 검증 시 누락 방지.
         for sec in &doc.sections {
-            for para in &sec.paragraphs {
-                for ctrl in &para.controls {
-                    ctx.register_control_refs(ctrl);
-                }
+            ctx.register_paragraph_refs(&sec.paragraphs);
+            for master_page in &sec.section_def.master_pages {
+                ctx.register_paragraph_refs(&master_page.paragraphs);
             }
         }
 
@@ -233,20 +233,36 @@ impl SerializeContext {
         }
     }
 
-    fn register_control_refs(&mut self, ctrl: &Control) {
-        if let Control::Table(tbl) = ctrl {
-            self.border_fill_ids.register(tbl.border_fill_id);
-            for zone in &tbl.zones {
-                self.border_fill_ids.register(zone.border_fill_id);
+    fn register_paragraph_refs(&mut self, paragraphs: &[Paragraph]) {
+        for para in paragraphs {
+            for ctrl in &para.controls {
+                self.register_control_refs(ctrl);
             }
-            for cell in &tbl.cells {
-                self.border_fill_ids.register(cell.border_fill_id);
-                for para in &cell.paragraphs {
-                    for nested_ctrl in &para.controls {
-                        self.register_control_refs(nested_ctrl);
-                    }
+        }
+    }
+
+    fn register_control_refs(&mut self, ctrl: &Control) {
+        match ctrl {
+            Control::Table(tbl) => {
+                self.border_fill_ids.register(tbl.border_fill_id);
+                for zone in &tbl.zones {
+                    self.border_fill_ids.register(zone.border_fill_id);
+                }
+                for cell in &tbl.cells {
+                    self.border_fill_ids.register(cell.border_fill_id);
+                    self.register_paragraph_refs(&cell.paragraphs);
                 }
             }
+            Control::Header(header) => self.register_paragraph_refs(&header.paragraphs),
+            Control::Footer(footer) => self.register_paragraph_refs(&footer.paragraphs),
+            Control::Footnote(footnote) => self.register_paragraph_refs(&footnote.paragraphs),
+            Control::Endnote(endnote) => self.register_paragraph_refs(&endnote.paragraphs),
+            Control::SectionDef(section_def) => {
+                for master_page in &section_def.master_pages {
+                    self.register_paragraph_refs(&master_page.paragraphs);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -266,6 +282,25 @@ fn mime_from_ext(ext: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::control::Control;
+    use crate::model::document::{Document, Section};
+    use crate::model::header_footer::{Header, MasterPage};
+    use crate::model::paragraph::Paragraph;
+    use crate::model::table::Table;
+
+    fn table_control_with_border_fill(border_fill_id: u16) -> Control {
+        Control::Table(Box::new(Table {
+            border_fill_id,
+            ..Table::default()
+        }))
+    }
+
+    fn paragraph_with_control(control: Control) -> Paragraph {
+        Paragraph {
+            controls: vec![control],
+            ..Paragraph::default()
+        }
+    }
 
     #[test]
     fn empty_doc_has_no_registered_ids() {
@@ -320,5 +355,53 @@ mod tests {
         assert_eq!(mime_from_ext("PNG"), "image/png");
         assert_eq!(mime_from_ext("jpg"), "image/jpeg");
         assert_eq!(mime_from_ext("unknown"), "application/octet-stream");
+    }
+
+    #[test]
+    fn collect_refs_in_header_footer_like_controls() {
+        let header = Header {
+            paragraphs: vec![paragraph_with_control(table_control_with_border_fill(25))],
+            ..Header::default()
+        };
+        let doc = Document {
+            sections: vec![Section {
+                paragraphs: vec![paragraph_with_control(Control::Header(Box::new(header)))],
+                ..Section::default()
+            }],
+            ..Document::default()
+        };
+
+        let ctx = SerializeContext::collect_from_document(&doc);
+
+        assert!(
+            ctx.border_fill_ids.is_registered(&25),
+            "header/footer nested table borderFillIDRef must be available to HWPX export context",
+        );
+    }
+
+    #[test]
+    fn collect_refs_in_master_page_paragraphs() {
+        let doc = Document {
+            sections: vec![Section {
+                section_def: crate::model::document::SectionDef {
+                    master_pages: vec![MasterPage {
+                        paragraphs: vec![paragraph_with_control(table_control_with_border_fill(
+                            25,
+                        ))],
+                        ..MasterPage::default()
+                    }],
+                    ..crate::model::document::SectionDef::default()
+                },
+                ..Section::default()
+            }],
+            ..Document::default()
+        };
+
+        let ctx = SerializeContext::collect_from_document(&doc);
+
+        assert!(
+            ctx.border_fill_ids.is_registered(&25),
+            "master page nested table borderFillIDRef must be available to HWPX export context",
+        );
     }
 }
