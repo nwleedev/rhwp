@@ -188,13 +188,33 @@ fn package_items_match(
     left: &[crate::parser::hwpx::content::PackageItem],
     right: &[crate::parser::hwpx::content::PackageItem],
 ) -> bool {
-    left.len() == right.len()
-        && left.iter().zip(right.iter()).all(|(left, right)| {
-            left.id == right.id
-                && left.href == right.href
-                && left.media_type == right.media_type
-                && left.is_embedded == right.is_embedded
-        })
+    fn normalized_media_type(media_type: &str) -> &str {
+        if media_type.eq_ignore_ascii_case("image/jpg") {
+            "image/jpeg"
+        } else {
+            media_type
+        }
+    }
+
+    fn signatures(
+        items: &[crate::parser::hwpx::content::PackageItem],
+    ) -> Vec<(&str, &str, &str, bool)> {
+        let mut signatures: Vec<_> = items
+            .iter()
+            .map(|item| {
+                (
+                    item.id.as_str(),
+                    item.href.as_str(),
+                    normalized_media_type(&item.media_type),
+                    item.is_embedded,
+                )
+            })
+            .collect();
+        signatures.sort_unstable();
+        signatures
+    }
+
+    signatures(left) == signatures(right)
 }
 
 /// 3-way BinData 동기화 단언: `ctx.bin_data_entries()`, content.hpf manifest,
@@ -795,6 +815,32 @@ mod tests {
             parsed.hwpx_package_entry("Contents/content.hpf"),
             Some(content_hpf.as_slice())
         );
+    }
+
+    #[test]
+    fn content_hpf_topology_match_ignores_manifest_order_and_jpg_alias() {
+        let preserved = br#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:manifest>
+    <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
+    <opf:item id="image1" href="BinData/image1.jpg" media-type="image/jpg" isEmbeded="1"/>
+    <opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/>
+    <opf:item id="settings" href="settings.xml" media-type="application/xml"/>
+  </opf:manifest>
+  <opf:spine><opf:itemref idref="header"/><opf:itemref idref="section0"/></opf:spine>
+</opf:package>"#;
+        let generated = br#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:manifest>
+    <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
+    <opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/>
+    <opf:item id="settings" href="settings.xml" media-type="application/xml"/>
+    <opf:item id="image1" href="BinData/image1.jpg" media-type="image/jpeg" isEmbeded="1"/>
+  </opf:manifest>
+  <opf:spine><opf:itemref idref="header"/><opf:itemref idref="section0"/></opf:spine>
+</opf:package>"#;
+
+        assert!(content_hpf_topology_matches(preserved, generated));
     }
 
     #[test]
