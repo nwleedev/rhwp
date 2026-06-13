@@ -32,12 +32,33 @@ use content::BinDataEntry as ContentBinDataEntry;
 use context::SerializeContext;
 use writer::HwpxZipWriter;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HwpxSerializeOptions {
+    pub preserve_document_xml: bool,
+}
+
 /// Document IR을 HWPX(ZIP+XML) 바이트로 직렬화한다.
 ///
 /// Stage 0 이후: 빈 문서 특수 분기를 제거하고 **항상 동적 경로**를 탄다.
 /// `SerializeContext`가 1-pass 스캔으로 ID 풀을 구성하고, 각 writer가 동일 컨텍스트를
 /// 참조한다. 직렬화 종료 시 `assert_all_refs_resolved()`가 미등록 참조를 단언한다.
 pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
+    serialize_hwpx_with_options(doc, HwpxSerializeOptions::default())
+}
+
+pub fn serialize_hwpx_preserving_document_xml(doc: &Document) -> Result<Vec<u8>, SerializeError> {
+    serialize_hwpx_with_options(
+        doc,
+        HwpxSerializeOptions {
+            preserve_document_xml: true,
+        },
+    )
+}
+
+pub fn serialize_hwpx_with_options(
+    doc: &Document,
+    options: HwpxSerializeOptions,
+) -> Result<Vec<u8>, SerializeError> {
     use static_assets::*;
 
     // 1-pass: ID 풀 구성
@@ -57,7 +78,15 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
 
     // 3. Contents/header.xml — Stage 1 동적 생성 (IR 기반)
     let header_xml = header::write_header(doc, &ctx)?;
-    z.write_deflated("Contents/header.xml", &header_xml)?;
+    z.write_deflated(
+        "Contents/header.xml",
+        preserved_document_xml(
+            doc,
+            "Contents/header.xml",
+            &header_xml,
+            options.preserve_document_xml,
+        ),
+    )?;
 
     // 4. Contents/section{N}.xml — 실제 섹션만큼, 없으면 0개
     let section_hrefs: Vec<String> = (0..doc.sections.len())
@@ -65,7 +94,10 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
         .collect();
     for (i, sec) in doc.sections.iter().enumerate() {
         let xml = section::write_section(sec, doc, i, &mut ctx)?;
-        z.write_deflated(&section_hrefs[i], &xml)?;
+        z.write_deflated(
+            &section_hrefs[i],
+            preserved_document_xml(doc, &section_hrefs[i], &xml, options.preserve_document_xml),
+        )?;
     }
 
     // 5. Preview/PrvText.txt + Preview/PrvImage.png
@@ -150,6 +182,18 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     assert_bin_data_3way(&bin_entries, &zip_bin_entries)?;
 
     z.finish()
+}
+
+fn preserved_document_xml<'a>(
+    doc: &'a Document,
+    path: &str,
+    generated: &'a [u8],
+    preserve_document_xml: bool,
+) -> &'a [u8] {
+    if !preserve_document_xml {
+        return generated;
+    }
+    doc.hwpx_package_entry(path).unwrap_or(generated)
 }
 
 fn preserved_content_hpf<'a>(doc: &'a Document, generated: &'a [u8]) -> &'a [u8] {
@@ -841,6 +885,54 @@ mod tests {
 </opf:package>"#;
 
         assert!(content_hpf_topology_matches(preserved, generated));
+    }
+
+    #[test]
+    fn document_xml_preservation_is_opt_in() {
+        use std::io::Read;
+
+        let preserved_header =
+            br#"<?xml version="1.0" encoding="UTF-8"?><hh:head preserved="header"/>"#;
+        let preserved_section =
+            br#"<?xml version="1.0" encoding="UTF-8"?><hs:sec preserved="section"/>"#;
+
+        let mut doc = Document::default();
+        doc.sections
+            .push(crate::model::document::Section::default());
+        doc.preserve_hwpx_package_entry("Contents/header.xml", preserved_header.to_vec());
+        doc.preserve_hwpx_package_entry("Contents/section0.xml", preserved_section.to_vec());
+
+        let dynamic_bytes = serialize_hwpx(&doc).expect("serialize dynamic");
+        let preserved_bytes =
+            serialize_hwpx_preserving_document_xml(&doc).expect("serialize preserved");
+
+        let mut dynamic_archive =
+            zip::ZipArchive::new(std::io::Cursor::new(dynamic_bytes)).expect("dynamic zip");
+        let mut dynamic_header = Vec::new();
+        dynamic_archive
+            .by_name("Contents/header.xml")
+            .expect("dynamic header")
+            .read_to_end(&mut dynamic_header)
+            .expect("read dynamic header");
+        assert_ne!(dynamic_header, preserved_header);
+
+        let mut preserved_archive =
+            zip::ZipArchive::new(std::io::Cursor::new(preserved_bytes)).expect("preserved zip");
+        let mut actual_header = Vec::new();
+        preserved_archive
+            .by_name("Contents/header.xml")
+            .expect("preserved header")
+            .read_to_end(&mut actual_header)
+            .expect("read preserved header");
+        let mut actual_section = Vec::new();
+        preserved_archive
+            .by_name("Contents/section0.xml")
+            .expect("preserved section")
+            .read_to_end(&mut actual_section)
+            .expect("read preserved section");
+
+        assert_eq!(actual_header, preserved_header);
+        assert_eq!(actual_section, preserved_section);
     }
 
     #[test]

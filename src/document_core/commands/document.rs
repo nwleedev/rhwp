@@ -617,8 +617,14 @@ impl DocumentCore {
 
     /// Document IR을 HWPX(ZIP+XML)로 직렬화 (네이티브 에러 타입)
     pub fn export_hwpx_native(&self) -> Result<Vec<u8>, HwpError> {
-        crate::serializer::serialize_hwpx(&self.document)
-            .map_err(|e| HwpError::RenderError(e.to_string()))
+        let result = if matches!(self.source_format, crate::parser::FileFormat::Hwpx)
+            && self.event_log.is_empty()
+        {
+            crate::serializer::hwpx::serialize_hwpx_preserving_document_xml(&self.document)
+        } else {
+            crate::serializer::serialize_hwpx(&self.document)
+        };
+        result.map_err(|e| HwpError::RenderError(e.to_string()))
     }
 
     /// 배포용(읽기전용) 문서를 편집 가능한 일반 문서로 변환한다 (네이티브 에러 타입).
@@ -957,6 +963,108 @@ impl DocumentCore {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hwpx_export_preservation_tests {
+    use super::*;
+    use crate::model::event::DocumentEvent;
+    use crate::serializer::serialize_hwpx;
+    use std::io::{Cursor, Read, Write};
+    use zip::write::SimpleFileOptions;
+
+    fn read_zip_entry(bytes: &[u8], path: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip");
+        let mut entry = archive.by_name(path).expect("entry");
+        let mut out = Vec::new();
+        entry.read_to_end(&mut out).expect("read entry");
+        out
+    }
+
+    fn insert_xml_comment(xml: &[u8], marker: &str) -> Vec<u8> {
+        let xml = std::str::from_utf8(xml).expect("utf8 xml");
+        let comment = format!("<!--{}-->", marker);
+        if let Some(idx) = xml.find("?>") {
+            let insert_at = idx + 2;
+            let mut out = String::with_capacity(xml.len() + comment.len());
+            out.push_str(&xml[..insert_at]);
+            out.push_str(&comment);
+            out.push_str(&xml[insert_at..]);
+            out.into_bytes()
+        } else {
+            let mut out = comment.into_bytes();
+            out.extend_from_slice(xml.as_bytes());
+            out
+        }
+    }
+
+    fn hwpx_with_document_xml_markers(bytes: &[u8]) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip");
+        let mut out = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut out);
+            for idx in 0..archive.len() {
+                let mut entry = archive.by_index(idx).expect("entry");
+                let name = entry.name().to_string();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).expect("read entry");
+                let data = match name.as_str() {
+                    "Contents/header.xml" => insert_xml_comment(&data, "preserved-header"),
+                    "Contents/section0.xml" => insert_xml_comment(&data, "preserved-section"),
+                    _ => data,
+                };
+                let opts = SimpleFileOptions::default().compression_method(entry.compression());
+                writer.start_file(name, opts).expect("start file");
+                writer.write_all(&data).expect("write file");
+            }
+            writer.finish().expect("finish zip");
+        }
+        out.into_inner()
+    }
+
+    #[test]
+    fn no_edit_hwpx_export_preserves_document_xml_entries() {
+        let mut doc = Document::default();
+        doc.sections
+            .push(crate::model::document::Section::default());
+        let source = serialize_hwpx(&doc).expect("source hwpx");
+        let marked = hwpx_with_document_xml_markers(&source);
+
+        let core = DocumentCore::from_bytes(&marked).expect("parse marked hwpx");
+        let exported = core.export_hwpx_native().expect("export no edit");
+
+        assert_eq!(
+            read_zip_entry(&exported, "Contents/header.xml"),
+            read_zip_entry(&marked, "Contents/header.xml")
+        );
+        assert_eq!(
+            read_zip_entry(&exported, "Contents/section0.xml"),
+            read_zip_entry(&marked, "Contents/section0.xml")
+        );
+    }
+
+    #[test]
+    fn edited_hwpx_export_uses_dynamic_document_xml_entries() {
+        let mut doc = Document::default();
+        doc.sections
+            .push(crate::model::document::Section::default());
+        let source = serialize_hwpx(&doc).expect("source hwpx");
+        let marked = hwpx_with_document_xml_markers(&source);
+
+        let mut core = DocumentCore::from_bytes(&marked).expect("parse marked hwpx");
+        core.event_log.push(DocumentEvent::TextInserted {
+            section: 0,
+            para: 0,
+            offset: 0,
+            len: 1,
+        });
+        let exported = core.export_hwpx_native().expect("export edited");
+
+        let header = read_zip_entry(&exported, "Contents/header.xml");
+        let section = read_zip_entry(&exported, "Contents/section0.xml");
+        assert!(!String::from_utf8_lossy(&header).contains("preserved-header"));
+        assert!(!String::from_utf8_lossy(&section).contains("preserved-section"));
     }
 }
 

@@ -196,8 +196,10 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
 
     // 4. section*.xml → Section 변환
     let mut sections = Vec::new();
+    let mut raw_section_entries: Vec<(String, Vec<u8>)> = Vec::new();
     for (section_idx, section_href) in package_info.section_files.iter().enumerate() {
         let section_xml = reader.read_file(section_href)?;
+        raw_section_entries.push((section_href.clone(), section_xml.as_bytes().to_vec()));
         let master_page_refs = match section::collect_hwpx_section_master_page_refs(&section_xml) {
             Ok(refs) => refs,
             Err(e) => {
@@ -342,6 +344,10 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
         if let Ok(data) = reader.read_file_bytes(path) {
             doc.preserve_hwpx_package_entry(path, data);
         }
+    }
+    doc.preserve_hwpx_package_entry("Contents/header.xml", header_xml.into_bytes());
+    for (path, data) in raw_section_entries {
+        doc.preserve_hwpx_package_entry(&path, data);
     }
 
     // [Task #873] BinData Link 타입 의 외부 file path 영역 영역 Picture.external_path 영역
