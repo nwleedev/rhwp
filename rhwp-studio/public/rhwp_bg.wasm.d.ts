@@ -221,6 +221,7 @@ export const hwpdocument_pasteInternalInCellByPath: (a: number, b: number, c: nu
 export const hwpdocument_reflowLinesegs: (a: number) => number;
 export const hwpdocument_removeFieldAt: (a: number, b: number, c: number, d: number) => [number, number];
 export const hwpdocument_removeFieldAtInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+export const hwpdocument_removeFieldById: (a: number, b: number) => [number, number];
 export const hwpdocument_renameBookmark: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const hwpdocument_renderEquationPreview: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const hwpdocument_renderPageCanvas: (a: number, b: number) => [number, number, number];

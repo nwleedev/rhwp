@@ -1159,6 +1159,10 @@ export class HwpDocument {
      */
     removeFieldAtInCell(section_idx: number, parent_para_idx: number, control_idx: number, cell_idx: number, cell_para_idx: number, char_offset: number, is_textbox: boolean): string;
     /**
+     * field_id로 필드를 제거한다 (텍스트 유지).
+     */
+    removeFieldById(field_id: number): string;
+    /**
      * 책갈피 이름 변경
      */
     renameBookmark(sec: number, para: number, ctrl_idx: number, new_name: string): string;
@@ -1770,6 +1774,7 @@ export interface InitOutput {
     readonly hwpdocument_reflowLinesegs: (a: number) => number;
     readonly hwpdocument_removeFieldAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly hwpdocument_removeFieldAtInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly hwpdocument_removeFieldById: (a: number, b: number) => [number, number];
     readonly hwpdocument_renameBookmark: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_renderEquationPreview: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly hwpdocument_renderPageCanvas: (a: number, b: number) => [number, number, number];

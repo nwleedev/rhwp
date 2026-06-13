@@ -1,5 +1,8 @@
 use super::*;
 use crate::model::control::Bookmark;
+use crate::model::control::{Control, PageNumberPos};
+use crate::model::document::SectionDef;
+use crate::model::page::ColumnDef;
 use crate::model::table::Table;
 
 #[test]
@@ -162,6 +165,129 @@ fn test_insert_text_empty() {
     para.insert_text_at(1, "");
     assert_eq!(para.text, "AB");
     assert_eq!(para.char_count, 2);
+}
+
+#[test]
+fn test_insert_text_preserves_hwpx_prefix_run_spans() {
+    let mut para = Paragraph {
+        char_count: 25,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 7,
+        }],
+        controls: vec![
+            Control::SectionDef(Box::new(SectionDef::default())),
+            Control::ColumnDef(ColumnDef::default()),
+            Control::PageNumberPos(PageNumberPos::default()),
+        ],
+        hwpx_run_spans: vec![HwpxRunSpan {
+            start_pos: 0,
+            end_pos: 24,
+            char_shape_id: 7,
+            empty_t_count: 0,
+        }],
+        ..Default::default()
+    };
+
+    para.insert_text_at(0, "proof");
+
+    assert_eq!(para.text, "proof");
+    assert_eq!(para.char_offsets, vec![24, 25, 26, 27, 28]);
+    assert_eq!(para.char_count, 30);
+    assert_eq!(para.hwpx_run_spans.len(), 2);
+    assert_eq!(para.hwpx_run_spans[0].start_pos, 0);
+    assert_eq!(para.hwpx_run_spans[0].end_pos, 24);
+    assert_eq!(para.hwpx_run_spans[1].start_pos, 24);
+    assert_eq!(para.hwpx_run_spans[1].end_pos, 29);
+}
+
+#[test]
+fn test_insert_text_before_first_table_keeps_structural_prefix() {
+    let mut para = Paragraph {
+        char_count: 33,
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 7,
+        }],
+        controls: vec![
+            Control::SectionDef(Box::new(SectionDef::default())),
+            Control::ColumnDef(ColumnDef::default()),
+            Control::PageNumberPos(PageNumberPos::default()),
+            Control::Table(Box::new(Table::default())),
+        ],
+        hwpx_run_spans: vec![
+            HwpxRunSpan {
+                start_pos: 0,
+                end_pos: 16,
+                char_shape_id: 7,
+                empty_t_count: 0,
+            },
+            HwpxRunSpan {
+                start_pos: 16,
+                end_pos: 24,
+                char_shape_id: 7,
+                empty_t_count: 0,
+            },
+            HwpxRunSpan {
+                start_pos: 24,
+                end_pos: 32,
+                char_shape_id: 46,
+                empty_t_count: 0,
+            },
+        ],
+        ..Default::default()
+    };
+
+    para.insert_text_at(0, "proof");
+
+    assert_eq!(para.text, "proof");
+    assert_eq!(para.char_offsets, vec![24, 25, 26, 27, 28]);
+    assert_eq!(para.char_count, 38);
+    assert_eq!(para.hwpx_run_spans[0].start_pos, 0);
+    assert_eq!(para.hwpx_run_spans[0].end_pos, 16);
+    assert_eq!(para.hwpx_run_spans[1].start_pos, 16);
+    assert_eq!(para.hwpx_run_spans[1].end_pos, 24);
+    assert_eq!(para.hwpx_run_spans[2].start_pos, 24);
+    assert_eq!(para.hwpx_run_spans[2].end_pos, 29);
+    assert_eq!(para.hwpx_run_spans[3].start_pos, 29);
+    assert_eq!(para.hwpx_run_spans[3].end_pos, 37);
+}
+
+#[test]
+fn test_insert_text_shifts_hwpx_zero_width_slots() {
+    let mut para = Paragraph {
+        text: "AB".to_string(),
+        char_count: 3,
+        char_offsets: vec![0, 1],
+        char_shapes: vec![CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 7,
+        }],
+        controls: vec![Control::Bookmark(Bookmark {
+            name: "mark".to_string(),
+        })],
+        hwpx_run_spans: vec![HwpxRunSpan {
+            start_pos: 0,
+            end_pos: 2,
+            char_shape_id: 7,
+            empty_t_count: 0,
+        }],
+        hwpx_zero_width_control_slots: vec![HwpxControlSlot {
+            control_idx: 0,
+            pos: 1,
+        }],
+        ..Default::default()
+    };
+
+    para.insert_text_at(0, "X");
+
+    assert_eq!(para.text, "XAB");
+    assert_eq!(para.char_offsets, vec![0, 1, 2]);
+    assert_eq!(para.hwpx_zero_width_control_slots[0].pos, 2);
+    assert_eq!(para.hwpx_run_spans[0].start_pos, 0);
+    assert_eq!(para.hwpx_run_spans[0].end_pos, 1);
+    assert_eq!(para.hwpx_run_spans[1].start_pos, 1);
+    assert_eq!(para.hwpx_run_spans[1].end_pos, 3);
 }
 
 #[test]

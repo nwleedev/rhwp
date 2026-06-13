@@ -329,8 +329,6 @@ impl Paragraph {
         if new_text.is_empty() {
             return;
         }
-        self.hwpx_run_spans.clear();
-        self.hwpx_zero_width_control_slots.clear();
 
         let text_chars: Vec<char> = self.text.chars().collect();
         let text_len = text_chars.len();
@@ -359,6 +357,28 @@ impl Paragraph {
                                 | Control::AutoNumber(_)
                         )
                 });
+        let inline_control_prefix_units = if inserts_before_inline_control {
+            self.controls
+                .iter()
+                .zip(control_positions.iter())
+                .take_while(|(ctrl, &pos)| {
+                    pos == effective_char_offset
+                        && !matches!(
+                            ctrl,
+                            Control::Shape(_)
+                                | Control::Table(_)
+                                | Control::Picture(_)
+                                | Control::Equation(_)
+                                | Control::Footnote(_)
+                                | Control::Endnote(_)
+                                | Control::AutoNumber(_)
+                        )
+                })
+                .count() as u32
+                * 8
+        } else {
+            0
+        };
 
         // 바이트 삽입 위치 계산
         let byte_offset: usize = text_chars[..effective_char_offset]
@@ -377,12 +397,13 @@ impl Paragraph {
             last_char_end + trailing_ctrl_count * 8
         } else if inserts_before_inline_control {
             if effective_char_offset == 0 {
-                0
+                inline_control_prefix_units
             } else if !self.char_offsets.is_empty() {
                 let prev_idx = effective_char_offset - 1;
-                self.char_offsets[prev_idx] + Self::char_utf16_len(text_chars[prev_idx])
+                (self.char_offsets[prev_idx] + Self::char_utf16_len(text_chars[prev_idx]))
+                    .max(inline_control_prefix_units)
             } else {
-                0
+                inline_control_prefix_units
             }
         } else if effective_char_offset < self.char_offsets.len() {
             self.char_offsets[effective_char_offset]
@@ -398,6 +419,16 @@ impl Paragraph {
         // 새 텍스트의 UTF-16 총 길이
         let new_chars: Vec<char> = new_text.chars().collect();
         let utf16_delta: u32 = new_chars.iter().map(|c| Self::char_utf16_len(*c)).sum();
+        let insert_char_shape_id = self
+            .char_shape_id_at(effective_char_offset)
+            .or_else(|| {
+                self.hwpx_run_spans
+                    .iter()
+                    .rev()
+                    .find(|span| span.start_pos <= utf16_insert_pos)
+                    .map(|span| span.char_shape_id)
+            })
+            .unwrap_or(0);
 
         // 1. 텍스트 삽입
         self.text.insert_str(byte_offset, new_text);
@@ -461,8 +492,55 @@ impl Paragraph {
             }
         }
 
+        self.preserve_hwpx_metadata_after_text_insert(
+            utf16_insert_pos,
+            utf16_delta,
+            insert_char_shape_id,
+        );
+
         // 6. char_count 갱신
         self.char_count += new_chars.len() as u32;
+    }
+
+    fn preserve_hwpx_metadata_after_text_insert(
+        &mut self,
+        utf16_insert_pos: u32,
+        utf16_delta: u32,
+        insert_char_shape_id: u32,
+    ) {
+        if self.hwpx_run_spans.is_empty() || utf16_delta == 0 {
+            return;
+        }
+
+        let inserted_inside_span = self
+            .hwpx_run_spans
+            .iter()
+            .any(|span| span.start_pos < utf16_insert_pos && utf16_insert_pos < span.end_pos);
+        for span in &mut self.hwpx_run_spans {
+            if span.start_pos >= utf16_insert_pos {
+                span.start_pos += utf16_delta;
+                span.end_pos += utf16_delta;
+            } else if span.end_pos > utf16_insert_pos {
+                span.end_pos += utf16_delta;
+            }
+        }
+
+        if !inserted_inside_span {
+            self.hwpx_run_spans.push(HwpxRunSpan {
+                start_pos: utf16_insert_pos,
+                end_pos: utf16_insert_pos + utf16_delta,
+                char_shape_id: insert_char_shape_id,
+                empty_t_count: 0,
+            });
+            self.hwpx_run_spans
+                .sort_by_key(|span| (span.start_pos, span.end_pos));
+        }
+
+        for slot in &mut self.hwpx_zero_width_control_slots {
+            if slot.pos >= utf16_insert_pos {
+                slot.pos += utf16_delta;
+            }
+        }
     }
 
     /// char_offset 위치에서 count개의 문자를 삭제한다.
