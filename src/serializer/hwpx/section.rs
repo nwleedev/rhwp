@@ -101,7 +101,7 @@ pub fn write_section(
 
     // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
     if let Some(p) = first_para {
-        let new_p_tag = render_hp_p_open(p, ctx.next_para_id());
+        let new_p_tag = render_hp_p_open_allocated(p, ctx);
         out = out.replacen(TEMPLATE_FIRST_P_TAG, &new_p_tag, 1);
     }
 
@@ -111,7 +111,7 @@ pub fn write_section(
         for p in section.paragraphs.iter().skip(1) {
             let (runs, linesegs, advance) = render_paragraph_xml_parts(p, vert_cursor, ctx);
             vert_cursor = advance;
-            extra.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+            extra.push_str(&render_hp_p_open_allocated(p, ctx));
             extra.push_str(&runs);
             extra.push_str(r#"<hp:linesegarray>"#);
             extra.push_str(&linesegs);
@@ -331,8 +331,12 @@ fn note_placement_to_hwpx(value: FootnotePlacement, is_end_note: bool) -> &'stat
 ///
 /// `id` 는 문단 순서 기반(0, 1, 2, ...)로 할당한다. 한컴 샘플은 랜덤 해시도 쓰지만
 /// 파서는 id 를 무시하므로 순차값으로 충분.
+pub(crate) fn render_hp_p_open_allocated(p: &Paragraph, ctx: &mut SerializeContext) -> String {
+    let id = ctx.allocate_para_id(preserved_paragraph_id(p));
+    render_hp_p_open(p, id)
+}
+
 pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
-    let id = preserved_paragraph_id(p).unwrap_or(id);
     let page_break = if matches!(p.column_type, ColumnBreakType::Page) {
         1
     } else {
@@ -1447,7 +1451,7 @@ fn render_header_footer(
     for p in h.paragraphs.iter() {
         let (runs, linesegs, advance) = render_paragraph_xml_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
-        out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+        out.push_str(&render_hp_p_open_allocated(p, ctx));
         out.push_str(&runs);
         out.push_str(r#"<hp:linesegarray>"#);
         out.push_str(&linesegs);
@@ -1709,7 +1713,7 @@ fn render_note_sublist(
     for p in paragraphs.iter() {
         let (runs, linesegs, advance) = render_paragraph_xml_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
-        out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+        out.push_str(&render_hp_p_open_allocated(p, ctx));
         out.push_str(&runs);
         out.push_str(r#"<hp:linesegarray>"#);
         out.push_str(&linesegs);

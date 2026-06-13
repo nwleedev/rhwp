@@ -97,10 +97,12 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
         buf.clear();
     }
 
-    // spine 순서대로 섹션 파일 추출
+    // spine 순서대로 섹션 파일 추출.
+    // section 파일명은 작성 도구마다 다를 수 있으므로 href 이름이 아니라
+    // content.hpf spine/manifest 관계를 우선한다.
     for idref in &spine_order {
         if let Some((_, href, media_type, _)) = all_items.iter().find(|(id, _, _, _)| id == idref) {
-            if media_type == "application/xml" && href.contains("section") {
+            if is_section_spine_item(href, media_type) {
                 info.section_files.push(href.clone());
             }
         }
@@ -140,6 +142,18 @@ pub fn parse_content_hpf(xml: &str) -> Result<PackageInfo, HwpxError> {
     }
 
     Ok(info)
+}
+
+fn is_section_spine_item(href: &str, media_type: &str) -> bool {
+    if media_type != "application/xml" {
+        return false;
+    }
+    let lower_href = href.to_ascii_lowercase();
+    !matches!(
+        lower_href.as_str(),
+        "contents/header.xml" | "settings.xml" | "version.xml"
+    ) && !lower_href.contains("masterpage")
+        && !lower_href.starts_with("meta-inf/")
 }
 
 fn collect_master_page_items(all_items: &[(String, String, String, bool)]) -> Vec<PackageItem> {
@@ -276,6 +290,25 @@ mod tests {
         assert!(!info.bin_data_items[0].is_embedded);
         assert_eq!(info.bin_data_items[1].href, "BinData/image2.jpg");
         assert!(info.bin_data_items[1].is_embedded);
+    }
+
+    #[test]
+    fn test_parse_content_hpf_noncanonical_section_href_from_spine() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf/">
+  <opf:manifest>
+    <opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>
+    <opf:item id="body0" href="Contents/body-0001.xml" media-type="application/xml"/>
+  </opf:manifest>
+  <opf:spine>
+    <opf:itemref idref="header" linear="yes"/>
+    <opf:itemref idref="body0" linear="yes"/>
+  </opf:spine>
+</opf:package>"#;
+
+        let info = parse_content_hpf(xml).unwrap();
+
+        assert_eq!(info.section_files, vec!["Contents/body-0001.xml"]);
     }
 
     #[test]

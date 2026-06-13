@@ -89,6 +89,8 @@ pub struct SerializeContext {
     pub bin_data_map: HashMap<u16, BinDataEntry>,
     /// 문서 전역 문단 ID 카운터 — `<hp:p id="...">` 에 발급한다.
     para_id_counter: u32,
+    /// 이번 export에서 이미 출력한 `<hp:p id>` 집합.
+    used_para_ids: HashSet<u32>,
 }
 
 impl SerializeContext {
@@ -211,6 +213,24 @@ impl SerializeContext {
         let id = self.para_id_counter;
         self.para_id_counter += 1;
         id
+    }
+
+    pub fn allocate_para_id(&mut self, preferred: Option<u32>) -> u32 {
+        if let Some(id) = preferred {
+            if self.used_para_ids.insert(id) {
+                while self.used_para_ids.contains(&self.para_id_counter) {
+                    self.para_id_counter = self.para_id_counter.saturating_add(1);
+                }
+                return id;
+            }
+        }
+
+        loop {
+            let id = self.next_para_id();
+            if self.used_para_ids.insert(id) {
+                return id;
+            }
+        }
     }
 
     fn register_control_refs(&mut self, ctrl: &Control) {

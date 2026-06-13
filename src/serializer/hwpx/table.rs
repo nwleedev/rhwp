@@ -36,7 +36,7 @@ use crate::model::shape::{
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
 
 use super::context::SerializeContext;
-use super::section::{render_hp_p_open, render_paragraph_xml_parts};
+use super::section::{render_hp_p_open_allocated, render_paragraph_xml_parts};
 use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
 use super::SerializeError;
 
@@ -162,7 +162,7 @@ fn write_caption<W: Write>(
         ctx.style_ids.reference(para.style_id as u16);
         let (runs_xml, linesegs, advance) = render_paragraph_xml_parts(para, vert_cursor, ctx);
         vert_cursor = advance;
-        let p_open = render_hp_p_open(para, ctx.next_para_id());
+        let p_open = render_hp_p_open_allocated(para, ctx);
         w.get_mut()
             .write_all(p_open.as_bytes())
             .map_err(|e| SerializeError::XmlError(format!("table caption paragraph: {}", e)))?;
@@ -337,7 +337,7 @@ fn write_sub_list<W: Write>(
         ctx.style_ids.reference(para.style_id as u16);
         let (runs_xml, linesegs, advance) = render_paragraph_xml_parts(para, vert_cursor, ctx);
         vert_cursor = advance;
-        let p_open = render_hp_p_open(para, ctx.next_para_id());
+        let p_open = render_hp_p_open_allocated(para, ctx);
         w.get_mut()
             .write_all(p_open.as_bytes())
             .map_err(|e| SerializeError::XmlError(format!("table cell paragraph: {}", e)))?;

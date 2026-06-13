@@ -56,7 +56,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::TableRowInserted {
+        self.record_document_event(DocumentEvent::TableRowInserted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -88,7 +88,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::TableColumnInserted {
+        self.record_document_event(DocumentEvent::TableColumnInserted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -119,7 +119,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::TableRowDeleted {
+        self.record_document_event(DocumentEvent::TableRowDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -150,7 +150,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::TableColumnDeleted {
+        self.record_document_event(DocumentEvent::TableColumnDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -183,7 +183,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellsMerged {
+        self.record_document_event(DocumentEvent::CellsMerged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -213,7 +213,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellSplit {
+        self.record_document_event(DocumentEvent::CellSplit {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -248,7 +248,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellSplit {
+        self.record_document_event(DocumentEvent::CellSplit {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -292,7 +292,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellSplit {
+        self.record_document_event(DocumentEvent::CellSplit {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -1704,7 +1704,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::TableColumnDeleted {
+        self.record_document_event(DocumentEvent::TableColumnDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,

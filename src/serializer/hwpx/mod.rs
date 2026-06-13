@@ -88,10 +88,8 @@ pub fn serialize_hwpx_with_options(
         ),
     )?;
 
-    // 4. Contents/section{N}.xml — 실제 섹션만큼, 없으면 0개
-    let section_hrefs: Vec<String> = (0..doc.sections.len())
-        .map(|i| format!("Contents/section{}.xml", i))
-        .collect();
+    // 4. section XML — HWPX 원본이 있으면 content.hpf spine의 href를 보존한다.
+    let section_hrefs = section_hrefs_for_doc(doc);
     for (i, sec) in doc.sections.iter().enumerate() {
         let xml = section::write_section(sec, doc, i, &mut ctx)?;
         z.write_deflated(
@@ -194,6 +192,30 @@ fn preserved_document_xml<'a>(
         return generated;
     }
     doc.hwpx_package_entry(path).unwrap_or(generated)
+}
+
+fn section_hrefs_for_doc(doc: &Document) -> Vec<String> {
+    let default_hrefs = || {
+        (0..doc.sections.len())
+            .map(|i| format!("Contents/section{}.xml", i))
+            .collect()
+    };
+
+    let Some(content_hpf) = doc.hwpx_package_entry("Contents/content.hpf") else {
+        return default_hrefs();
+    };
+    let Ok(content_xml) = std::str::from_utf8(content_hpf) else {
+        return default_hrefs();
+    };
+    let Ok(package_info) = crate::parser::hwpx::content::parse_content_hpf(content_xml) else {
+        return default_hrefs();
+    };
+
+    if package_info.section_files.len() == doc.sections.len() {
+        package_info.section_files
+    } else {
+        default_hrefs()
+    }
 }
 
 fn preserved_content_hpf<'a>(doc: &'a Document, generated: &'a [u8]) -> &'a [u8] {

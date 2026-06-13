@@ -641,7 +641,7 @@ impl DocumentCore {
         // 본 본문 picture setter 만 누락되어 있어 studio 가 stale page tree 반환 → tac toggle
         // 후 시각 변화 없음 증상의 root cause.
         self.invalidate_page_tree_cache();
-        self.event_log.push(DocumentEvent::PictureResized {
+        self.record_document_event(DocumentEvent::PictureResized {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -734,7 +734,7 @@ impl DocumentCore {
         section.raw_stream = None;
         self.recompose_section(section_idx);
         self.paginate_if_needed();
-        self.event_log.push(DocumentEvent::PictureResized {
+        self.record_document_event(DocumentEvent::PictureResized {
             section: section_idx,
             para: outer_para_idx,
             ctrl: outer_control_idx,
@@ -1310,7 +1310,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::PictureDeleted {
+        self.record_document_event(DocumentEvent::PictureDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -1695,7 +1695,7 @@ impl DocumentCore {
         // 새 BorderFill 추가 시 styles.border_styles 갱신이 필요하므로 rebuild_section 사용
         self.rebuild_section(section_idx);
 
-        self.event_log.push(DocumentEvent::TableRowInserted {
+        self.record_document_event(DocumentEvent::TableRowInserted {
             section: section_idx,
             para: insert_para_idx,
             ctrl: 0,
@@ -1981,7 +1981,7 @@ impl DocumentCore {
         // rebuild
         self.rebuild_section(section_idx);
 
-        self.event_log.push(DocumentEvent::TableRowInserted {
+        self.record_document_event(DocumentEvent::TableRowInserted {
             section: section_idx,
             para: para_idx,
             ctrl: ctrl_idx,
@@ -2179,7 +2179,7 @@ impl DocumentCore {
                 self.paginate_if_needed();
                 self.invalidate_page_tree_cache();
 
-                self.event_log.push(DocumentEvent::PictureInserted {
+                self.record_document_event(DocumentEvent::PictureInserted {
                     section: section_idx,
                     para: para_idx,
                 });
@@ -2254,7 +2254,7 @@ impl DocumentCore {
             // 연속 insert + toggle 시 cache stale → studio 화면 불일치.
             self.invalidate_page_tree_cache();
 
-            self.event_log.push(DocumentEvent::PictureInserted {
+            self.record_document_event(DocumentEvent::PictureInserted {
                 section: section_idx,
                 para: para_idx,
             });
@@ -2318,7 +2318,7 @@ impl DocumentCore {
         // [Task #1151 v9 결함 F] page tree cache invalidate (v5 패턴).
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::PictureInserted {
+        self.record_document_event(DocumentEvent::PictureInserted {
             section: section_idx,
             para: para_idx,
         });
@@ -3065,7 +3065,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::PictureResized {
+        self.record_document_event(DocumentEvent::PictureResized {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -3502,7 +3502,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
         let outer_table_ctrl = path.first().unwrap().0;
-        self.event_log.push(DocumentEvent::PictureResized {
+        self.record_document_event(DocumentEvent::PictureResized {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_table_ctrl,
@@ -3600,7 +3600,7 @@ impl DocumentCore {
         self.invalidate_page_tree_cache();
 
         let outer_ctrl = path.first().unwrap().0;
-        self.event_log.push(DocumentEvent::PictureDeleted {
+        self.record_document_event(DocumentEvent::PictureDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_ctrl,
@@ -3644,7 +3644,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
         let outer_table_ctrl = path.first().unwrap().0;
-        self.event_log.push(DocumentEvent::PictureResized {
+        self.record_document_event(DocumentEvent::PictureResized {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_table_ctrl,
@@ -3749,7 +3749,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::PictureDeleted {
+        self.record_document_event(DocumentEvent::PictureDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -4230,7 +4230,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::PictureInserted {
+        self.record_document_event(DocumentEvent::PictureInserted {
             section: section_idx,
             para: insert_para_idx,
         });
@@ -5213,7 +5213,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::PictureInserted {
+        self.record_document_event(DocumentEvent::PictureInserted {
             section: section_idx,
             para: insert_pi,
         });
@@ -5403,7 +5403,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::PictureDeleted {
+        self.record_document_event(DocumentEvent::PictureDeleted {
             section: section_idx,
             para: para_idx,
             ctrl: control_idx,
@@ -5890,7 +5890,7 @@ impl DocumentCore {
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::PictureDeleted {
+        self.record_document_event(DocumentEvent::PictureDeleted {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -6454,7 +6454,9 @@ impl DocumentCore {
             .controls
             .insert(insert_idx, Control::Footnote(Box::new(footnote)));
         let ctrl_data_insert_idx = insert_idx.min(paragraph.ctrl_data_records.len());
-        paragraph.ctrl_data_records.insert(ctrl_data_insert_idx, None);
+        paragraph
+            .ctrl_data_records
+            .insert(ctrl_data_insert_idx, None);
 
         // char_offsets 조정: char_offset 위치에 8바이트 갭 생성
         // char_offsets[i]는 텍스트 i번째 문자의 UTF-16 오프셋 (컨트롤은 갭으로 표현)
@@ -6462,9 +6464,7 @@ impl DocumentCore {
         // text에 포함되지 않는 제어 문자(cc - text_len 차이)가 있을 수 있으므로 범위 확인
         if !paragraph.char_offsets.is_empty() {
             let text_len = paragraph.text.chars().count();
-            let safe_offset = char_offset
-                .min(text_len)
-                .min(paragraph.char_offsets.len());
+            let safe_offset = char_offset.min(text_len).min(paragraph.char_offsets.len());
             for co in paragraph.char_offsets[safe_offset..].iter_mut() {
                 *co += 8;
             }
@@ -6545,7 +6545,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::PictureInserted {
+        self.record_document_event(DocumentEvent::PictureInserted {
             section: section_idx,
             para: para_idx,
         });
@@ -6690,13 +6690,13 @@ impl DocumentCore {
             .controls
             .insert(insert_idx, Control::Endnote(Box::new(endnote)));
         let ctrl_data_insert_idx = insert_idx.min(paragraph.ctrl_data_records.len());
-        paragraph.ctrl_data_records.insert(ctrl_data_insert_idx, None);
+        paragraph
+            .ctrl_data_records
+            .insert(ctrl_data_insert_idx, None);
 
         if !paragraph.char_offsets.is_empty() {
             let text_len = paragraph.text.chars().count();
-            let safe_offset = char_offset
-                .min(text_len)
-                .min(paragraph.char_offsets.len());
+            let safe_offset = char_offset.min(text_len).min(paragraph.char_offsets.len());
             for co in paragraph.char_offsets[safe_offset..].iter_mut() {
                 *co += 8;
             }
@@ -6737,7 +6737,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::PictureInserted {
+        self.record_document_event(DocumentEvent::PictureInserted {
             section: section_idx,
             para: para_idx,
         });
@@ -6981,7 +6981,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::PictureInserted {
+        self.record_document_event(DocumentEvent::PictureInserted {
             section: section_idx,
             para: para_idx,
         });

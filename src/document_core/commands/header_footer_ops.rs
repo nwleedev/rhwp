@@ -284,7 +284,7 @@ impl DocumentCore {
         self.paginate_if_needed();
 
         let new_offset = char_offset + new_chars_count;
-        self.event_log.push(DocumentEvent::TextInserted {
+        self.record_document_event(DocumentEvent::TextInserted {
             section: section_idx,
             para: 0,
             offset: char_offset,
@@ -325,7 +325,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::TextDeleted {
+        self.record_document_event(DocumentEvent::TextDeleted {
             section: section_idx,
             para: 0,
             offset: char_offset,
@@ -398,7 +398,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::ParagraphSplit {
+        self.record_document_event(DocumentEvent::ParagraphSplit {
             section: section_idx,
             para: hf_para_idx,
             offset: char_offset,
@@ -464,7 +464,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::ParagraphMerged {
+        self.record_document_event(DocumentEvent::ParagraphMerged {
             section: section_idx,
             para: hf_para_idx,
         });
@@ -850,7 +850,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.rebuild_section(section_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: section_idx,
             para: 0,
         });
@@ -880,7 +880,7 @@ impl DocumentCore {
             self.paginate_if_needed();
 
             let new_offset = char_offset + 1;
-            self.event_log.push(DocumentEvent::TextInserted {
+            self.record_document_event(DocumentEvent::TextInserted {
                 section: section_idx,
                 para: 0,
                 offset: char_offset,
@@ -913,7 +913,7 @@ impl DocumentCore {
         self.paginate_if_needed();
 
         let new_offset = char_offset + 1;
-        self.event_log.push(DocumentEvent::TextInserted {
+        self.record_document_event(DocumentEvent::TextInserted {
             section: section_idx,
             para: 0,
             offset: char_offset,

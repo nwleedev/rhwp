@@ -118,6 +118,7 @@ impl DocumentCore {
             page_tree_cache: RefCell::new(Vec::new()),
             batch_mode: false,
             event_log: Vec::new(),
+            document_mutation_count: 0,
             overflow_links_cache: RefCell::new(HashMap::new()),
             snapshot_store: Vec::new(),
             next_snapshot_id: 0,
@@ -618,7 +619,7 @@ impl DocumentCore {
     /// Document IR을 HWPX(ZIP+XML)로 직렬화 (네이티브 에러 타입)
     pub fn export_hwpx_native(&self) -> Result<Vec<u8>, HwpError> {
         let result = if matches!(self.source_format, crate::parser::FileFormat::Hwpx)
-            && self.event_log.is_empty()
+            && !self.has_document_mutations_since_load()
         {
             crate::serializer::hwpx::serialize_hwpx_preserving_document_xml(&self.document)
         } else {
@@ -630,6 +631,9 @@ impl DocumentCore {
     /// 배포용(읽기전용) 문서를 편집 가능한 일반 문서로 변환한다 (네이티브 에러 타입).
     pub fn convert_to_editable_native(&mut self) -> Result<String, HwpError> {
         let converted = self.document.convert_to_editable();
+        if converted {
+            self.mark_document_mutated();
+        }
         Ok(format!("{{\"ok\":true,\"converted\":{}}}", converted))
     }
 
@@ -647,6 +651,7 @@ impl DocumentCore {
     /// 문서 IR을 직접 설정한다 (테스트/네이티브 전용).
     pub fn set_document(&mut self, doc: Document) {
         self.document = doc;
+        self.mark_document_mutated();
         self.styles = resolve_styles(&self.document.doc_info, self.dpi);
         self.composed = self
             .document
@@ -1023,11 +1028,40 @@ mod hwpx_export_preservation_tests {
         out.into_inner()
     }
 
+    fn hwpx_with_renamed_section(bytes: &[u8], from: &str, to: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("zip");
+        let mut out = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut out);
+            for idx in 0..archive.len() {
+                let mut entry = archive.by_index(idx).expect("entry");
+                let name = entry.name().to_string();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).expect("read entry");
+                let next_name = if name == from { to.to_string() } else { name };
+                let data = if next_name == "Contents/content.hpf" {
+                    String::from_utf8(data)
+                        .expect("content.hpf utf8")
+                        .replace(from, to)
+                        .into_bytes()
+                } else {
+                    data
+                };
+                let opts = SimpleFileOptions::default().compression_method(entry.compression());
+                writer.start_file(next_name, opts).expect("start file");
+                writer.write_all(&data).expect("write file");
+            }
+            writer.finish().expect("finish zip");
+        }
+        out.into_inner()
+    }
+
     #[test]
     fn no_edit_hwpx_export_preserves_document_xml_entries() {
         let mut doc = Document::default();
         doc.sections
             .push(crate::model::document::Section::default());
+        doc.sections[0].paragraphs.push(Paragraph::default());
         let source = serialize_hwpx(&doc).expect("source hwpx");
         let marked = hwpx_with_document_xml_markers(&source);
 
@@ -1045,6 +1079,28 @@ mod hwpx_export_preservation_tests {
     }
 
     #[test]
+    fn no_edit_hwpx_export_preserves_noncanonical_section_href() {
+        let mut doc = Document::default();
+        doc.sections
+            .push(crate::model::document::Section::default());
+        let source = serialize_hwpx(&doc).expect("source hwpx");
+        let renamed =
+            hwpx_with_renamed_section(&source, "Contents/section0.xml", "Contents/body-0001.xml");
+
+        let core = DocumentCore::from_bytes(&renamed).expect("parse renamed hwpx");
+        let exported = core.export_hwpx_native().expect("export no edit");
+
+        assert_eq!(
+            read_zip_entry(&exported, "Contents/body-0001.xml"),
+            read_zip_entry(&renamed, "Contents/body-0001.xml")
+        );
+        let exported_content = String::from_utf8(read_zip_entry(&exported, "Contents/content.hpf"))
+            .expect("exported content utf8");
+        assert!(exported_content.contains("Contents/body-0001.xml"));
+        assert!(!exported_content.contains("Contents/section0.xml"));
+    }
+
+    #[test]
     fn edited_hwpx_export_uses_dynamic_document_xml_entries() {
         let mut doc = Document::default();
         doc.sections
@@ -1053,12 +1109,33 @@ mod hwpx_export_preservation_tests {
         let marked = hwpx_with_document_xml_markers(&source);
 
         let mut core = DocumentCore::from_bytes(&marked).expect("parse marked hwpx");
-        core.event_log.push(DocumentEvent::TextInserted {
+        core.record_document_event(DocumentEvent::TextInserted {
             section: 0,
             para: 0,
             offset: 0,
             len: 1,
         });
+        let exported = core.export_hwpx_native().expect("export edited");
+
+        let header = read_zip_entry(&exported, "Contents/header.xml");
+        let section = read_zip_entry(&exported, "Contents/section0.xml");
+        assert!(!String::from_utf8_lossy(&header).contains("preserved-header"));
+        assert!(!String::from_utf8_lossy(&section).contains("preserved-section"));
+    }
+
+    #[test]
+    fn edited_hwpx_export_uses_dynamic_document_xml_after_event_log_clear() {
+        let mut doc = Document::default();
+        doc.sections
+            .push(crate::model::document::Section::default());
+        doc.sections[0].paragraphs.push(Paragraph::default());
+        let source = serialize_hwpx(&doc).expect("source hwpx");
+        let marked = hwpx_with_document_xml_markers(&source);
+
+        let mut core = DocumentCore::from_bytes(&marked).expect("parse marked hwpx");
+        core.insert_text_native(0, 0, 0, "edited")
+            .expect("insert text");
+        core.event_log.clear();
         let exported = core.export_hwpx_native().expect("export edited");
 
         let header = read_zip_entry(&exported, "Contents/header.xml");

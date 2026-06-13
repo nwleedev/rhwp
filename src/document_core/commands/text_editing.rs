@@ -110,7 +110,7 @@ impl DocumentCore {
             );
         }
 
-        self.event_log.push(DocumentEvent::TextInserted {
+        self.record_document_event(DocumentEvent::TextInserted {
             section: section_idx,
             para: para_idx,
             offset: char_offset,
@@ -216,7 +216,7 @@ impl DocumentCore {
             );
         }
 
-        self.event_log.push(DocumentEvent::TextDeleted {
+        self.record_document_event(DocumentEvent::TextDeleted {
             section: section_idx,
             para: para_idx,
             offset: char_offset,
@@ -303,7 +303,7 @@ impl DocumentCore {
         self.paginate_if_needed();
 
         let new_offset = char_offset + new_chars_count;
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -353,7 +353,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -660,7 +660,7 @@ impl DocumentCore {
             self.mark_cell_control_dirty(section_idx, ppi, ci);
             self.mark_section_dirty(section_idx);
             self.paginate_if_needed();
-            self.event_log.push(DocumentEvent::CellTextChanged {
+            self.record_document_event(DocumentEvent::CellTextChanged {
                 section: section_idx,
                 para: ppi,
                 ctrl: ci,
@@ -734,7 +734,7 @@ impl DocumentCore {
             self.document.doc_properties.caret_list_id = section_idx as u32;
             self.document.doc_properties.caret_para_id = start_para as u32;
 
-            self.event_log.push(DocumentEvent::TextDeleted {
+            self.record_document_event(DocumentEvent::TextDeleted {
                 section: section_idx,
                 para: start_para,
                 offset: start_offset,
@@ -883,7 +883,7 @@ impl DocumentCore {
             self.paginate_if_needed();
         }
 
-        self.event_log.push(DocumentEvent::ParagraphSplit {
+        self.record_document_event(DocumentEvent::ParagraphSplit {
             section: section_idx,
             para: para_idx,
             offset: char_offset,
@@ -947,7 +947,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::ParagraphSplit {
+        self.record_document_event(DocumentEvent::ParagraphSplit {
             section: section_idx,
             para: para_idx,
             offset: char_offset,
@@ -1010,7 +1010,7 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
 
-        self.event_log.push(DocumentEvent::ParagraphSplit {
+        self.record_document_event(DocumentEvent::ParagraphSplit {
             section: section_idx,
             para: para_idx,
             offset: char_offset,
@@ -1171,7 +1171,7 @@ impl DocumentCore {
             self.paginate_if_needed();
         }
 
-        self.event_log.push(DocumentEvent::ParagraphMerged {
+        self.record_document_event(DocumentEvent::ParagraphMerged {
             section: section_idx,
             para: para_idx,
         });
@@ -1261,7 +1261,7 @@ impl DocumentCore {
         }
 
         let new_count = self.document.sections[section_idx].paragraphs.len();
-        self.event_log.push(DocumentEvent::ParagraphDeleted {
+        self.record_document_event(DocumentEvent::ParagraphDeleted {
             section: section_idx,
             para: para_idx,
         });
@@ -1336,7 +1336,7 @@ impl DocumentCore {
         }
 
         let new_count = self.document.sections[section_idx].paragraphs.len();
-        self.event_log.push(DocumentEvent::ParagraphInserted {
+        self.record_document_event(DocumentEvent::ParagraphInserted {
             section: section_idx,
             para: para_idx,
         });
@@ -1412,7 +1412,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -1506,7 +1506,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: control_idx,
@@ -2288,7 +2288,7 @@ impl DocumentCore {
         self.paginate_if_needed();
 
         let new_offset = char_offset + new_chars_count;
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_ctrl,
@@ -2318,7 +2318,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_ctrl,
@@ -2384,7 +2384,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_ctrl,
@@ -2454,7 +2454,7 @@ impl DocumentCore {
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 
-        self.event_log.push(DocumentEvent::CellTextChanged {
+        self.record_document_event(DocumentEvent::CellTextChanged {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_ctrl,

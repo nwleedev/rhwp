@@ -985,7 +985,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::CharFormatChanged {
+        self.record_document_event(DocumentEvent::CharFormatChanged {
             section: sec_idx,
             para: para_idx,
             start: start_offset,
@@ -1050,7 +1050,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::CharFormatChanged {
+        self.record_document_event(DocumentEvent::CharFormatChanged {
             section: sec_idx,
             para: para_idx,
             start: start_offset,
@@ -1140,7 +1140,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::CharFormatChanged {
+        self.record_document_event(DocumentEvent::CharFormatChanged {
             section: sec_idx,
             para: parent_para_idx,
             start: start_offset,
@@ -1190,7 +1190,7 @@ impl DocumentCore {
         self.mark_cell_control_dirty(sec_idx, parent_para_idx, control_idx);
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::CharFormatChanged {
+        self.record_document_event(DocumentEvent::CharFormatChanged {
             section: sec_idx,
             para: parent_para_idx,
             start: start_offset,
@@ -1285,7 +1285,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
             para: para_idx,
         });
@@ -1345,7 +1345,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
             para: para_idx,
         });
@@ -1463,7 +1463,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
             para: parent_para_idx,
         });
@@ -1509,7 +1509,7 @@ impl DocumentCore {
         self.mark_cell_control_dirty(sec_idx, parent_para_idx, control_idx);
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
             para: parent_para_idx,
         });
@@ -1704,7 +1704,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
             para: para_idx,
         });
@@ -1765,7 +1765,7 @@ impl DocumentCore {
 
         self.document.sections[sec_idx].raw_stream = None;
         self.rebuild_section(sec_idx);
-        self.event_log.push(DocumentEvent::ParaFormatChanged {
+        self.record_document_event(DocumentEvent::ParaFormatChanged {
             section: sec_idx,
             para: parent_para_idx,
         });

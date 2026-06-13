@@ -93,6 +93,11 @@ pub struct DocumentCore {
     pub(crate) batch_mode: bool,
     /// 이벤트 로그 (Command 실행 시 누적)
     pub(crate) event_log: Vec<DocumentEvent>,
+    /// 로드 이후 문서 데이터가 변경된 횟수.
+    ///
+    /// `event_log`는 batch/API 흐름에서 비워질 수 있으므로 export 보존 여부의
+    /// 근거로 사용하지 않는다.
+    pub(crate) document_mutation_count: u64,
     /// 글상자 오버플로우 연결 캐시 (섹션별, 지연 계산)
     pub(crate) overflow_links_cache:
         RefCell<HashMap<usize, Vec<queries::doc_tree_nav::OverflowLink>>>,
@@ -202,6 +207,19 @@ impl DocumentCore {
         crate::model::event::serialize_event_log(&self.event_log)
     }
 
+    pub(crate) fn record_document_event(&mut self, event: DocumentEvent) {
+        self.mark_document_mutated();
+        self.event_log.push(event);
+    }
+
+    pub(crate) fn mark_document_mutated(&mut self) {
+        self.document_mutation_count = self.document_mutation_count.saturating_add(1);
+    }
+
+    pub(crate) fn has_document_mutations_since_load(&self) -> bool {
+        self.document_mutation_count > 0
+    }
+
     /// DPI를 설정하고 스타일을 재해소한 후 재페이지네이션한다.
     pub fn set_dpi(&mut self, dpi: f64) {
         use crate::renderer::style_resolver::resolve_styles_with_variant;
@@ -240,6 +258,7 @@ impl DocumentCore {
             page_tree_cache: RefCell::new(Vec::new()),
             batch_mode: false,
             event_log: Vec::new(),
+            document_mutation_count: 0,
             overflow_links_cache: RefCell::new(HashMap::new()),
             snapshot_store: Vec::new(),
             next_snapshot_id: 0,
