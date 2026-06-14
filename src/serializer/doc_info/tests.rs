@@ -153,6 +153,7 @@ fn test_serialize_char_shape_roundtrip() {
         strike_shape: 0,
         kerning: false,
         hwpx_char_pr_switches: Vec::new(),
+        use_font_space: false,
     };
 
     let data = serialize_char_shape(&cs);
@@ -185,6 +186,33 @@ fn test_serialize_char_shape_roundtrip() {
     }
     assert_eq!(r.read_i32().unwrap(), 1000);
     assert_eq!(r.read_u32().unwrap(), 0x03);
+}
+
+#[test]
+fn test_serialize_char_shape_use_font_space_bit() {
+    let mut cs = CharShape {
+        base_size: 1000,
+        ratios: [100; 7],
+        relative_sizes: [100; 7],
+        shade_color: 0x00FFFFFF,
+        shadow_color: 0x00B2B2B2,
+        use_font_space: true,
+        ..Default::default()
+    };
+
+    let data = serialize_char_shape(&cs);
+    let mut r = crate::parser::byte_reader::ByteReader::new(&data);
+    r.skip(14 + 7 + 7 + 7 + 7 + 4).unwrap();
+    let attr = r.read_u32().unwrap();
+    assert_ne!(attr & (1 << 25), 0);
+
+    cs.attr = 1 << 25;
+    cs.use_font_space = false;
+    let data = serialize_char_shape(&cs);
+    let mut r = crate::parser::byte_reader::ByteReader::new(&data);
+    r.skip(14 + 7 + 7 + 7 + 7 + 4).unwrap();
+    let attr = r.read_u32().unwrap();
+    assert_eq!(attr & (1 << 25), 0);
 }
 
 #[test]
@@ -469,6 +497,7 @@ fn test_serialize_doc_info_roundtrip() {
         strike_shape: 0,
         kerning: false,
         hwpx_char_pr_switches: Vec::new(),
+        use_font_space: false,
     });
     doc_info.para_shapes.push(ParaShape {
         raw_data: None,

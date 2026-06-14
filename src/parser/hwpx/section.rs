@@ -13,7 +13,10 @@ use crate::model::control::{
 use crate::model::document::{Section, SectionDef};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply, MasterPage};
-use crate::model::image::{CropInfo, ImageAttr, ImageEffect};
+use crate::model::image::{
+    CropInfo, EffectColor, EffectPoint, EffectRgb, ImageAttr, ImageEffect, PictureEffects,
+    PictureShadow,
+};
 use crate::model::page::{
     BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
     PageBorderFillApply, PageBorderUiBasis, PageDef,
@@ -790,14 +793,10 @@ fn parse_paragraph(
         }
     }
 
-    // 기본 line_seg (빈 문단이라도 최소 1개)
-    if para.line_segs.is_empty() {
-        para.line_segs.push(LineSeg {
-            text_start: 0,
-            tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
-            ..Default::default()
-        });
-    }
+    // [#1380] 원본에 `<hp:linesegarray>` 가 없는 문단은 line_segs 를 빈 채로 유지한다.
+    // 종전에는 zero-default LineSeg 1개를 합성 주입했으나, serializer 가 이 주입분을
+    // `vertsize="0" ...` lineseg 로 방출하여 원본 무 → RT 유 비대칭을 만들었다.
+    // 한컴은 lineseg 가 없으면 열 때 재계산하므로 빈 채 보존이 안전하다.
 
     // [Task #1058 후속] HWPX `<hp:p id>` → HWP PARA_HEADER instance_id 매핑.
     // raw_header_extra 구조 (serializer 정합 — body_text.rs:241):
@@ -1964,7 +1963,7 @@ fn pack_hwpx_common_obj_attr(common: &CommonObjAttr) -> u32 {
     attr
 }
 
-/// 표 캡션 파싱
+/// `<hp:caption>` 파싱 — 표(#1387)·그림/도형/묶음(#1403) 공유.
 fn parse_table_caption(
     e: &quick_xml::events::BytesStart,
     reader: &mut Reader<&[u8]>,
@@ -2228,6 +2227,7 @@ fn parse_picture(
     let mut border_y = [0i32; 4];
     let mut href: Option<String> = None;
     let mut picture_instance_id = 0;
+    let mut effects = PictureEffects::default();
 
     // <hp:pic> 요소 자체의 속성 파싱
     for attr in e.attributes().flatten() {
@@ -2267,6 +2267,7 @@ fn parse_picture(
 
     // 이미지 속성 읽기
     let mut has_pos = false; // <pos> 파싱 여부 — <offset>이 덮어쓰지 않도록 방지
+    let mut caption: Option<crate::model::shape::Caption> = None;
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -2275,6 +2276,13 @@ fn parse_picture(
             }
             Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"shapeComment" => {
                 common.description = read_dutmal_text(reader, b"shapeComment")?;
+            }
+            Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"effects" => {
+                effects = parse_picture_effects(reader)?;
+            }
+            // 그림 캡션 (#1403) — 미적재 시 roundtrip 에서 캡션 subList 소실
+            Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"caption" => {
+                caption = Some(parse_table_caption(ce, reader)?);
             }
             Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
@@ -2526,8 +2534,143 @@ fn parse_picture(
     pic.border_x = border_x;
     pic.border_y = border_y;
     pic.instance_id = picture_instance_id;
+    pic.effects = effects;
+    pic.caption = caption;
 
     Ok(Control::Picture(Box::new(pic)))
+}
+
+fn parse_picture_effects(reader: &mut Reader<&[u8]>) -> Result<PictureEffects, HwpxError> {
+    let mut effects = PictureEffects::default();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if local_name(e.name().as_ref()) == b"shadow" => {
+                effects.shadow = Some(parse_picture_shadow(e, reader)?);
+            }
+            Ok(Event::Empty(ref e)) if local_name(e.name().as_ref()) == b"shadow" => {
+                effects.shadow = Some(parse_picture_shadow_attrs(e));
+            }
+            Ok(Event::End(ref e)) if local_name(e.name().as_ref()) == b"effects" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(HwpxError::XmlError(format!("effects: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(effects)
+}
+
+fn parse_picture_shadow(
+    e: &quick_xml::events::BytesStart<'_>,
+    reader: &mut Reader<&[u8]>,
+) -> Result<PictureShadow, HwpxError> {
+    let mut shadow = parse_picture_shadow_attrs(e);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) => match local_name(e.name().as_ref()) {
+                b"skew" => shadow.skew = Some(parse_effect_point(e)),
+                b"scale" => shadow.scale = Some(parse_effect_point(e)),
+                b"effectsColor" => {
+                    shadow.color = Some(parse_effect_color_attrs(e));
+                }
+                _ => {}
+            },
+            Ok(Event::Start(ref e)) if local_name(e.name().as_ref()) == b"effectsColor" => {
+                shadow.color = Some(parse_effect_color(e, reader)?);
+            }
+            Ok(Event::End(ref e)) if local_name(e.name().as_ref()) == b"shadow" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(HwpxError::XmlError(format!("shadow: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(shadow)
+}
+
+fn parse_picture_shadow_attrs(e: &quick_xml::events::BytesStart<'_>) -> PictureShadow {
+    let mut shadow = PictureShadow::default();
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"style" => shadow.style = Some(attr_str(&attr)),
+            b"alpha" => shadow.alpha = Some(attr_str(&attr)),
+            b"radius" => shadow.radius = Some(attr_str(&attr)),
+            b"direction" => shadow.direction = Some(attr_str(&attr)),
+            b"distance" => shadow.distance = Some(attr_str(&attr)),
+            b"alignStyle" => shadow.align_style = Some(attr_str(&attr)),
+            b"rotationStyle" => shadow.rotation_style = Some(attr_str(&attr)),
+            _ => {}
+        }
+    }
+    shadow
+}
+
+fn parse_effect_point(e: &quick_xml::events::BytesStart<'_>) -> EffectPoint {
+    let mut point = EffectPoint::default();
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"x" => point.x = Some(attr_str(&attr)),
+            b"y" => point.y = Some(attr_str(&attr)),
+            _ => {}
+        }
+    }
+    point
+}
+
+fn parse_effect_color(
+    e: &quick_xml::events::BytesStart<'_>,
+    reader: &mut Reader<&[u8]>,
+) -> Result<EffectColor, HwpxError> {
+    let mut color = parse_effect_color_attrs(e);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Empty(ref e)) if local_name(e.name().as_ref()) == b"rgb" => {
+                color.rgb = Some(parse_effect_rgb(e));
+            }
+            Ok(Event::End(ref e)) if local_name(e.name().as_ref()) == b"effectsColor" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(HwpxError::XmlError(format!("effectsColor: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(color)
+}
+
+fn parse_effect_color_attrs(e: &quick_xml::events::BytesStart<'_>) -> EffectColor {
+    let mut color = EffectColor::default();
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"type" => color.color_type = Some(attr_str(&attr)),
+            b"schemeIdx" => color.scheme_idx = Some(attr_str(&attr)),
+            b"systemIdx" => color.system_idx = Some(attr_str(&attr)),
+            b"presetIdx" => color.preset_idx = Some(attr_str(&attr)),
+            _ => {}
+        }
+    }
+    color
+}
+
+fn parse_effect_rgb(e: &quick_xml::events::BytesStart<'_>) -> EffectRgb {
+    let mut rgb = EffectRgb::default();
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"r" => rgb.r = Some(attr_str(&attr)),
+            b"g" => rgb.g = Some(attr_str(&attr)),
+            b"b" => rgb.b = Some(attr_str(&attr)),
+            _ => {}
+        }
+    }
+    rgb
 }
 
 // ─── 그리기 객체 공통 속성 파싱 ───
@@ -2647,6 +2790,15 @@ fn parse_object_element_attrs(
             b"instid" => ids.instid = parse_u32(&attr),
             b"groupLevel" => shape_attr.group_level = attr_str(&attr).parse().unwrap_or(0),
             b"ratio" => ids.round_rate = parse_u8(&attr).min(100),
+            // [Task #1379] numberingType (캡션 번호 범주) 보존 — exam_kor 등 광범위 사용.
+            b"numberingType" => {
+                common.numbering_type = match attr_str(&attr).to_ascii_uppercase().as_str() {
+                    "PICTURE" => crate::model::shape::ObjectNumberingType::Picture,
+                    "TABLE" => crate::model::shape::ObjectNumberingType::Table,
+                    "EQUATION" => crate::model::shape::ObjectNumberingType::Equation,
+                    _ => crate::model::shape::ObjectNumberingType::None,
+                };
+            }
             _ => {}
         }
     }
@@ -3327,12 +3479,16 @@ fn parse_draw_text(reader: &mut Reader<&[u8]>, text_box: &mut TextBox) -> Result
                                 // 가 세로쓰기 (`layout_vertical_textbox_text_with_paras`)
                                 // 활성화. "VERTICAL"/"VERTICALALL" 모두 code 1.
                                 b"textDirection" => {
-                                    let direction_code: u32 = match attr_str(&attr).as_str() {
+                                    let dir = attr_str(&attr);
+                                    let direction_code: u32 = match dir.as_str() {
                                         "VERTICAL" | "VERTICALALL" => 1,
                                         _ => 0,
                                     };
                                     text_box.list_attr =
                                         (text_box.list_attr & !0b111) | direction_code;
+                                    // [Task #1379] VERTICAL/VERTICALALL 구분 보존
+                                    // — serializer 역방출용 (list_attr 만으로는 구분 불가).
+                                    text_box.vertical_all = dir == "VERTICALALL";
                                 }
                                 _ => {}
                             }
@@ -3396,11 +3552,16 @@ fn parse_shape_object(
     let object_ids = parse_object_element_attrs(e, &mut common, &mut shape_attr);
 
     let tag_name = String::from_utf8_lossy(shape_type).to_string();
+    let mut caption: Option<crate::model::shape::Caption> = None;
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"shapeComment" => {
                 common.description = read_dutmal_text(reader, b"shapeComment")?;
+            }
+            // 도형 캡션 (#1403) — 미적재 시 roundtrip 에서 캡션 subList 소실
+            Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"caption" => {
+                caption = Some(parse_table_caption(ce, reader)?);
             }
             Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
@@ -3562,7 +3723,7 @@ fn parse_shape_object(
         shadow_alpha,
         inst_id: object_ids.instid,
         text_box,
-        ..Default::default()
+        caption,
     };
 
     let shape = match shape_type {
@@ -3637,9 +3798,14 @@ fn parse_container(
 
     parse_object_element_attrs(e, &mut common, &mut shape_attr);
 
+    let mut caption: Option<crate::model::shape::Caption> = None;
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
+            // 묶음 개체 캡션 (#1403) — 미적재 시 roundtrip 에서 캡션 subList 소실
+            Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"caption" => {
+                caption = Some(parse_table_caption(ce, reader)?);
+            }
             Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
@@ -3700,7 +3866,7 @@ fn parse_container(
         common,
         shape_attr,
         children,
-        caption: None,
+        caption,
     };
 
     Ok(Control::Shape(Box::new(ShapeObject::Group(group))))
@@ -4925,6 +5091,9 @@ fn calc_utf16_len_from_parts(parts: &[String]) -> u32 {
     parts
         .iter()
         .map(|s| match s.as_str() {
+            // [#1382] \u{0012}(AUTO_NUMBER) 포함 — placeholder 공백을 포함해 8유닛
+            // (offsets 조립 루프와 동일 축). 종전 `_` 분기(1유닛)로 빠져 char_shapes
+            // 경계가 offsets 축과 어긋났다 (143E 각주 run 경계 2 → 정답 9).
             "\u{0002}" | "\u{0003}" | "\u{0004}" | "\u{0012}" => 8,
             _ => s
                 .chars()
@@ -5017,6 +5186,52 @@ fn parse_form_object(
                 form.properties
                     .insert("Command".to_string(), attr_str(&attr));
             }
+            // 버튼류 전용 속성 (라운드트립 보존; writer 가 동일 키로 읽음)
+            b"radioGroupName" => {
+                form.properties
+                    .insert("RadioGroupName".to_string(), attr_str(&attr));
+            }
+            b"triState" => {
+                form.properties
+                    .insert("TriState".to_string(), attr_str(&attr));
+            }
+            b"backStyle" => {
+                form.properties
+                    .insert("BackStyle".to_string(), attr_str(&attr));
+            }
+            // Edit 전용 속성 (라운드트립 보존)
+            b"multiLine" => {
+                form.properties
+                    .insert("MultiLine".to_string(), attr_str(&attr));
+            }
+            b"passwordChar" => {
+                form.properties
+                    .insert("PasswordChar".to_string(), attr_str(&attr));
+            }
+            b"maxLength" => {
+                form.properties
+                    .insert("MaxLength".to_string(), attr_str(&attr));
+            }
+            b"scrollBars" => {
+                form.properties
+                    .insert("ScrollBars".to_string(), attr_str(&attr));
+            }
+            b"tabKeyBehavior" => {
+                form.properties
+                    .insert("TabKeyBehavior".to_string(), attr_str(&attr));
+            }
+            b"numOnly" => {
+                form.properties
+                    .insert("Number".to_string(), attr_str(&attr));
+            }
+            b"readOnly" => {
+                form.properties
+                    .insert("ReadOnly".to_string(), attr_str(&attr));
+            }
+            b"alignText" => {
+                form.properties
+                    .insert("AlignText".to_string(), attr_str(&attr));
+            }
             _ => {}
         }
     }
@@ -5024,7 +5239,8 @@ fn parse_form_object(
     // 자식 요소 순회
     let end_tag = local_name(e.name().as_ref()).to_vec();
     let mut buf = Vec::new();
-    let mut list_items: Vec<String> = Vec::new();
+    // (value, displayText) 쌍으로 보존 — comboBox 항목
+    let mut list_items: Vec<(String, String)> = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -5062,22 +5278,72 @@ fn parse_form_object(
                 let local = local_name(cname.as_ref());
                 match local {
                     b"sz" => {
-                        // <hp:sz width="..." height="..."/>
+                        // <hp:sz width="..." widthRelTo="..." height="..." heightRelTo="..." protect="..."/>
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"width" => form.width = parse_u32(&attr),
                                 b"height" => form.height = parse_u32(&attr),
+                                b"widthRelTo" => {
+                                    form.properties
+                                        .insert("SzWidthRelTo".to_string(), attr_str(&attr));
+                                }
+                                b"heightRelTo" => {
+                                    form.properties
+                                        .insert("SzHeightRelTo".to_string(), attr_str(&attr));
+                                }
+                                b"protect" => {
+                                    form.properties
+                                        .insert("SzProtect".to_string(), attr_str(&attr));
+                                }
                                 _ => {}
                             }
                         }
                     }
-                    b"listItem" => {
-                        // <hp:listItem value="..."/> (comboBox 항목)
+                    b"pos" => {
+                        // <hp:pos .../> 앵커링 (표준 ShapePositionType 11속성) — 라운드트립 보존
                         for attr in ce.attributes().flatten() {
-                            if attr.key.as_ref() == b"value" {
-                                list_items.push(attr_str(&attr));
+                            let key = match attr.key.as_ref() {
+                                b"treatAsChar" => "PosTreatAsChar",
+                                b"affectLSpacing" => "PosAffectLSpacing",
+                                b"flowWithText" => "PosFlowWithText",
+                                b"allowOverlap" => "PosAllowOverlap",
+                                b"holdAnchorAndSO" => "PosHoldAnchorAndSO",
+                                b"vertRelTo" => "PosVertRelTo",
+                                b"horzRelTo" => "PosHorzRelTo",
+                                b"vertAlign" => "PosVertAlign",
+                                b"horzAlign" => "PosHorzAlign",
+                                b"vertOffset" => "PosVertOffset",
+                                b"horzOffset" => "PosHorzOffset",
+                                _ => continue,
+                            };
+                            form.properties.insert(key.to_string(), attr_str(&attr));
+                        }
+                    }
+                    b"outMargin" => {
+                        // <hp:outMargin left=".." right=".." top=".." bottom=".."/> — 라운드트립 보존
+                        for attr in ce.attributes().flatten() {
+                            let key = match attr.key.as_ref() {
+                                b"left" => "OutMarginLeft",
+                                b"right" => "OutMarginRight",
+                                b"top" => "OutMarginTop",
+                                b"bottom" => "OutMarginBottom",
+                                _ => continue,
+                            };
+                            form.properties.insert(key.to_string(), attr_str(&attr));
+                        }
+                    }
+                    b"listItem" => {
+                        // <hp:listItem displayText="..." value="..."/> (comboBox 항목)
+                        let mut value = String::new();
+                        let mut display = String::new();
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"value" => value = attr_str(&attr),
+                                b"displayText" => display = attr_str(&attr),
+                                _ => {}
                             }
                         }
+                        list_items.push((value, display));
                     }
                     b"formCharPr" => {
                         // <hp:formCharPr charPrIDRef="0" followContext="0" autoSz="1" wordWrap="0"/>
@@ -5119,11 +5385,13 @@ fn parse_form_object(
         buf.clear();
     }
 
-    // comboBox 항목 목록을 properties에 저장
+    // comboBox 항목 목록(값 + 표시 텍스트)을 properties에 저장
     if !list_items.is_empty() {
-        for (i, item) in list_items.iter().enumerate() {
+        for (i, (value, display)) in list_items.iter().enumerate() {
             form.properties
-                .insert(format!("listItem{}", i), item.clone());
+                .insert(format!("listItem{}", i), value.clone());
+            form.properties
+                .insert(format!("listItemDisplay{}", i), display.clone());
         }
     }
 
@@ -5463,6 +5731,87 @@ mod tests {
         assert_eq!(section.paragraphs.len(), 1);
         assert_eq!(section.paragraphs[0].text, "Hello World");
         assert_eq!(section.paragraphs[0].para_shape_id, 0);
+    }
+
+    // ---------- #1382: autoNum 폭 축 일관화 ----------
+
+    #[test]
+    fn task1382_calc_counts_autonum_as_8_units() {
+        // \u{0012}(AUTO_NUMBER) 는 placeholder 포함 8유닛 — offsets 축과 동일.
+        let parts = vec!["\u{0012}".to_string(), " ".to_string()];
+        assert_eq!(calc_utf16_len_from_parts(&parts), 9);
+    }
+
+    #[test]
+    fn task1382_autonum_run_boundary_on_offsets_axis() {
+        // 143E 각주 패턴: run1(ctrl autoNum + 공백) + run2(텍스트) →
+        // run2 경계는 offsets 축 9 (autoNum 8 + 공백 1). 종전 1유닛 축에서는 2.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="10"><hp:ctrl><hp:autoNum num="1" numType="FOOTNOTE"/></hp:ctrl><hp:t> </hp:t></hp:run>
+    <hp:run charPrIDRef="11"><hp:t>본문</hp:t></hp:run>
+  </hp:p>
+</hs:sec>"#;
+        let section = parse_hwpx_section(xml).unwrap();
+        let p = &section.paragraphs[0];
+        assert_eq!(p.text, "  본문", "placeholder 공백 + 실제 공백 + 텍스트");
+        assert_eq!(p.char_offsets, vec![0, 8, 9, 10]);
+        assert_eq!(
+            p.char_shapes
+                .iter()
+                .map(|c| (c.start_pos, c.char_shape_id))
+                .collect::<Vec<_>>(),
+            vec![(0, 10), (9, 11)],
+            "run2 경계는 offsets 축 9"
+        );
+    }
+
+    #[test]
+    fn task1380_no_linesegarray_keeps_line_segs_empty() {
+        // 원본에 <hp:linesegarray> 가 없는 문단은 zero-default 를 주입하지 않고
+        // line_segs 를 빈 채 유지한다 (#1380 — 원본 무 → RT 무 대칭의 전제).
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:t>텍스트 있음</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        assert!(
+            section.paragraphs[0].line_segs.is_empty(),
+            "linesegarray 부재 문단에 zero-default 가 주입되면 안 됨: {:?}",
+            section.paragraphs[0].line_segs
+        );
+    }
+
+    #[test]
+    fn task1380_linesegarray_values_loaded_as_is() {
+        // <hp:linesegarray> 가 있으면 9개 필드를 그대로 적재한다.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:t>한 줄</hp:t>
+    </hp:run>
+    <hp:linesegarray>
+      <hp:lineseg textpos="0" vertpos="15360" vertsize="2197" textheight="2197" baseline="1867" spacing="1098" horzpos="0" horzsize="42520" flags="393216"/>
+    </hp:linesegarray>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let segs = &section.paragraphs[0].line_segs;
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].vertical_pos, 15360);
+        assert_eq!(segs[0].line_height, 2197);
+        assert_eq!(segs[0].tag, 393216);
     }
 
     #[test]

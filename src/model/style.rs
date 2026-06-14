@@ -83,6 +83,8 @@ pub struct CharShape {
     pub kerning: bool,
     /// HWPX `<hh:charPr>` 하위 `<switch>` 분기 원본 XML (라운드트립 보존용)
     pub hwpx_char_pr_switches: Vec<String>,
+    /// 글꼴에 어울리는 빈칸 사용 여부 (bit 25)
+    pub use_font_space: bool,
 }
 
 /// CharShape 비교: raw_data와 HWPX 보존 metadata 제외
@@ -118,6 +120,7 @@ impl PartialEq for CharShape {
             && self.underline_shape == other.underline_shape
             && self.strike_shape == other.strike_shape
             && self.kerning == other.kerning
+            && self.use_font_space == other.use_font_space
     }
 }
 

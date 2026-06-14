@@ -13,7 +13,9 @@ pub mod content;
 pub mod context;
 pub mod field;
 pub mod fixtures;
+pub mod form;
 pub mod header;
+pub mod package_check;
 pub mod picture;
 pub mod roundtrip;
 pub mod section;
@@ -660,7 +662,46 @@ mod tests {
     }
 
     #[test]
-    fn linesegs_emitted_per_linebreak() {
+    fn linesegs_from_ir_emitted_per_linebreak() {
+        // IR 에 lineseg 가 있으면 줄 수만큼 그대로 방출. IR 에 없으면 방출 생략 (#1380)
+        // — 종전의 텍스트 `\n` 기반 fallback 합성은 제거됐다.
+        let mut doc = Document::default();
+        let mut section = crate::model::document::Section::default();
+        let mut para = crate::model::paragraph::Paragraph::default();
+        para.text = "A\nB\nC".to_string();
+        for (textpos, vertpos) in [(0u32, 0i32), (2, 1600), (4, 3200)] {
+            para.line_segs.push(crate::model::paragraph::LineSeg {
+                text_start: textpos,
+                vertical_pos: vertpos,
+                line_height: 1000,
+                text_height: 1000,
+                baseline_distance: 850,
+                line_spacing: 600,
+                tag: crate::model::paragraph::LineSeg::TAG_SINGLE_SEGMENT_LINE,
+                ..Default::default()
+            });
+        }
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize");
+        let cursor = std::io::Cursor::new(&bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+        let mut sec0 = archive.by_name("Contents/section0.xml").expect("section0");
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut sec0, &mut xml).expect("read");
+
+        let count = xml.matches("<hp:lineseg ").count();
+        assert_eq!(count, 3, "expected 3 linesegs, got {}: {}", count, xml);
+        assert!(xml.contains(r#"textpos="0" vertpos="0""#));
+        assert!(xml.contains(r#"textpos="2" vertpos="1600""#));
+        assert!(xml.contains(r#"textpos="4" vertpos="3200""#));
+    }
+
+    #[test]
+    fn task1380_no_linesegarray_when_ir_has_none() {
+        // 파서가 zero-default 를 주입하지 않으므로(#1380) IR 에 lineseg 없는 문단은
+        // 패키지 산출물에서도 linesegarray 가 없어야 한다 (원본 무 → RT 무 대칭).
         let mut doc = Document::default();
         let mut section = crate::model::document::Section::default();
         let mut para = crate::model::paragraph::Paragraph::default();
@@ -675,12 +716,7 @@ mod tests {
         let mut xml = String::new();
         std::io::Read::read_to_string(&mut sec0, &mut xml).expect("read");
 
-        // 3줄(소프트) → lineseg 3개, textpos=0/2/4, vertpos=0/1600/3200
-        let count = xml.matches("<hp:lineseg ").count();
-        assert_eq!(count, 3, "expected 3 linesegs, got {}: {}", count, xml);
-        assert!(xml.contains(r#"textpos="0" vertpos="0""#));
-        assert!(xml.contains(r#"textpos="2" vertpos="1600""#));
-        assert!(xml.contains(r#"textpos="4" vertpos="3200""#));
+        assert!(!xml.contains("<hp:linesegarray"), "got: {}", xml);
     }
 
     #[test]
@@ -1040,6 +1076,67 @@ mod tests {
         assert_eq!(parsed.bin_data_content.len(), 1);
         assert_eq!(parsed.bin_data_content[0].data, fake_png);
         assert_eq!(parsed.bin_data_content[0].extension, "png");
+    }
+
+    #[test]
+    fn issue_1345_picture_effects_shadow_roundtrip() {
+        use crate::model::control::Control;
+        use crate::model::shape::ShapeObject;
+
+        fn count_shape_picture_shadows(shape: &ShapeObject) -> usize {
+            match shape {
+                ShapeObject::Picture(pic) => usize::from(pic.effects.shadow.is_some()),
+                ShapeObject::Group(group) => {
+                    group.children.iter().map(count_shape_picture_shadows).sum()
+                }
+                _ => 0,
+            }
+        }
+
+        fn count_picture_shadows(control: &Control) -> usize {
+            match control {
+                Control::Picture(pic) => usize::from(pic.effects.shadow.is_some()),
+                Control::Shape(shape) => count_shape_picture_shadows(shape),
+                _ => 0,
+            }
+        }
+
+        let bytes = std::fs::read("samples/hwpx/aift.hwpx")
+            .expect("samples/hwpx/aift.hwpx must be readable");
+        let original = parse_hwpx(&bytes).expect("parse original");
+        let parsed_shadow_count: usize = original
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|para| &para.controls)
+            .map(count_picture_shadows)
+            .sum();
+        assert!(
+            parsed_shadow_count > 0,
+            "parser must preserve at least one picture shadow effect"
+        );
+
+        let serialized = serialize_hwpx(&original).expect("serialize roundtrip");
+
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(serialized)).expect("roundtrip zip");
+        let section_names: Vec<String> = archive
+            .file_names()
+            .filter(|name| name.starts_with("Contents/section") && name.ends_with(".xml"))
+            .map(String::from)
+            .collect();
+        let mut section_xml = String::new();
+        for name in section_names {
+            let mut section = archive.by_name(&name).expect("roundtrip section");
+            std::io::Read::read_to_string(&mut section, &mut section_xml).expect("read section");
+        }
+
+        for needle in ["<hp:shadow ", "<hp:scale ", "<hp:effectsColor ", "<hp:rgb "] {
+            assert!(
+                section_xml.contains(needle),
+                "roundtrip section XML must preserve {needle}"
+            );
+        }
     }
 
     #[test]
