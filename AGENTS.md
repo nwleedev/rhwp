@@ -18,6 +18,13 @@
 - 검색은 먼저 `rg` 또는 `rg --files`를 사용한다.
 - 커밋 전에는 민감정보, 개인 경로, private 문서 원문, 테스트용 원본 HWPX 내용이 포함되지 않았는지 확인한다.
 
+## Git 워크플로우
+
+- 이 작업은 fork된 rhwp 레포를 기준으로 진행한다. Codex는 `CLAUDE.md`에 있는 여러 Git 흐름 중 원본 저장소 maintainer용 `local/devel` 중심 흐름을 임의로 적용하지 않고, 현재 fork 레포와 현재 작업 브랜치의 워크플로우를 우선 준수한다.
+- 현재 작업 브랜치가 명시되어 있으면 그 브랜치에서 커밋한다. 새 브랜치, merge, rebase, push, PR 생성은 사용자가 명시적으로 요청한 경우에만 수행한다.
+- fork에서 upstream 반영이 필요하면 먼저 `git remote -v`와 현재 branch/upstream 관계를 확인하고, 사용자 승인 없이 remote 설정이나 branch tracking을 바꾸지 않는다.
+- 커밋 메시지는 기존 저장소 스타일을 따른다. 예: `fix(hwpx): ...`, `test(studio): ...`, `docs(hwpx): ...`
+
 ## rhwp 구조
 
 - HWPX 파서는 `src/parser/hwpx/`의 책임을 우선 확인한다.
